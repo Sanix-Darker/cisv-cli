@@ -2,6 +2,10 @@
 
 CLI distribution for CISV.
 
+## Upstream core
+
+- cisv-core: https://github.com/Sanix-Darker/cisv-core
+
 ## Build
 
 ```bash
