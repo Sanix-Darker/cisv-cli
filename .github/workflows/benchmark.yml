@@ -1,0 +1,14 @@
+name: Benchmark CLI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build benchmark image
+        run: docker build -t cisv-cli-bench -f cli/benchmarks/Dockerfile .
+      - name: Run benchmark
+        run: docker run --rm --platform linux/amd64 --cpus=2 --memory=4g cisv-cli-bench
