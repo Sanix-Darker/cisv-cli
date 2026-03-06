@@ -65,6 +65,7 @@ Key options:
 More runnable scripts: [`examples/`](./examples)
 
 ## Benchmarks
+![CLI Benchmarks](./assets/benchmark-cli.png)
 
 ```bash
 docker build -t cisv-cli-bench -f cli/benchmarks/Dockerfile .
