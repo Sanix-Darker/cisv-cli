@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.14)
 # CLI executable
 add_executable(cisv src/main.c)
 target_link_libraries(cisv PRIVATE cisv_static m pthread)
-target_include_directories(cisv PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+target_include_directories(cisv PRIVATE ${CMAKE_SOURCE_DIR}/core/core/include)
 
 # Platform-specific settings
 if(UNIX AND NOT APPLE)

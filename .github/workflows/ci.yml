@@ -23,4 +23,4 @@ jobs:
       - name: Test
         run: make test
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/core/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/core/core/build

@@ -279,10 +279,10 @@ main() {
     local CISV_BIN=""
     if [ -f "./cli/build/cisv" ]; then
         CISV_BIN="./cli/build/cisv"
-        export LD_LIBRARY_PATH="./core/build:${LD_LIBRARY_PATH:-}"
+        export LD_LIBRARY_PATH="./core/core/build:${LD_LIBRARY_PATH:-}"
     elif [ -f "/benchmark/cisv/cli/build/cisv" ]; then
         CISV_BIN="/benchmark/cisv/cli/build/cisv"
-        export LD_LIBRARY_PATH="/benchmark/cisv/core/build:${LD_LIBRARY_PATH:-}"
+        export LD_LIBRARY_PATH="/benchmark/cisv/core/core/build:${LD_LIBRARY_PATH:-}"
     elif [ -f "/usr/local/bin/cisv" ]; then
         CISV_BIN="/usr/local/bin/cisv"
     fi

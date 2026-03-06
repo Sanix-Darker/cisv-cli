@@ -49,7 +49,7 @@ LDFLAGS ?= -flto -s $(SECURITY_LDFLAGS)
 # Directories
 SRC_DIR = src
 BUILD_DIR = build
-CORE_DIR = ../core
+CORE_DIR = ../core/core
 
 # Source files
 SRCS = $(SRC_DIR)/main.c
