@@ -11,6 +11,27 @@ cisv \- high-performance CSV parser and writer CLI
 \fBcisv\fR is a high-performance CSV command-line tool backed by \fBcisv-core\fR.
 It supports parsing, row counting, column selection, head/tail output, benchmarking,
 and CSV generation through the \fBwrite\fR subcommand.
+.SH INPUT MODEL
+.TP
+.B File path
+Default input mode. Provide a CSV file path as the last argument.
+.TP
+.B "-"
+Use \fB-\fR to read CSV from stdin explicitly.
+.TP
+.B Piped stdin
+If stdin is piped and no input file is provided, \fBcisv\fR reads stdin automatically.
+.SH OUTPUT MODEL
+.TP
+.B CSV (default)
+Rows are written as CSV to stdout (or \fB--output\fR file).
+.TP
+.B JSON (\fB--json\fR)
+Outputs a JSON array. Header row is used as object keys unless \fB--no-header\fR.
+.TP
+.B JSONL (\fB--jsonl\fR)
+Outputs one JSON object/array per line for streaming pipelines.
+.SH COMMANDS
 .SH COMMANDS
 .TP
 .B parse
@@ -97,6 +118,20 @@ Output JSON Lines format.
 .TP
 .B \-b, \-\-benchmark
 Run parser benchmark mode.
+.SH WHERE EXPRESSIONS
+.TP
+.B Equality / inequality
+\fBcol==value\fR, \fBcol!=value\fR
+.TP
+.B Numeric comparison
+\fBcol>100\fR, \fBcol>=100\fR, \fBcol<100\fR, \fBcol<=100\fR
+.TP
+.B Contains
+\fBcol~text\fR
+.TP
+.B Column reference
+\fBcol\fR can be a zero-based index (\fB0\fR, \fB1\fR, ...) or a header name
+when a header row is present.
 .SH WRITE OPTIONS
 .TP
 .B \-g, \-\-generate \fIN\fR
@@ -139,17 +174,46 @@ Select columns 0 and 2:
 Parse stdin stream:
 .B cat data.csv | cisv -
 .TP
+Parse TSV and emit JSONL:
+.B cisv -d $'\\t' --jsonl data.tsv
+.TP
 Select by header name:
 .B cisv --select-name id,name data.csv
 .TP
 Filter rows:
 .B cisv --where 'status==ok' data.csv
 .TP
+Filter by numeric threshold:
+.B cisv --where 'latency_ms>100' data.csv
+.TP
+Filter substring match:
+.B cisv --where 'email~@example.com' data.csv
+.TP
 JSON output:
 .B cisv --json data.csv
 .TP
+Pipeline from stdin to file:
+.B cat data.csv | cisv --select-name id,name - > reduced.csv
+.TP
 Generate one million rows:
 .B cisv write \-g 1000000 \-o out.csv
+.SH ENVIRONMENT
+.TP
+.B CISV_STATS
+If set, print parser statistics to stderr after execution.
+.SH FILES
+.TP
+.B /usr/bin/cisv
+CLI binary.
+.TP
+.B /usr/share/man/man1/cisv.1
+Manual page.
+.SH NOTES
+.TP
+For best performance on very large files, avoid unnecessary format conversion
+and prefer direct CSV output unless JSON/JSONL is required by downstream tools.
+.TP
+Use \fB--no-header\fR when processing CSV sources without header rows.
 .SH EXIT STATUS
 .TP
 .B 0

@@ -19,7 +19,7 @@ CLI distribution for CISV.
 #### APT (DEBIAN/UBUNTU)
 
 ```bash
-curl -fsSL https://packagecloud.io/install/repositories/<owner>/<repo>/script.deb.sh | sudo bash
+curl -fsSL https://packagecloud.io/install/repositories/sanix-darker/cisv-cli/script.deb.sh | sudo bash
 sudo apt-get update
 sudo apt-get install -y cisv-cli
 ```
@@ -27,7 +27,7 @@ sudo apt-get install -y cisv-cli
 #### DNF/YUM/ZYPPER (RPM-BASED)
 
 ```bash
-curl -fsSL https://packagecloud.io/install/repositories/<owner>/<repo>/script.rpm.sh | sudo bash
+curl -fsSL https://packagecloud.io/install/repositories/sanix-darker/cisv-cli/script.rpm.sh | sudo bash
 sudo dnf install -y cisv-cli
 # or: sudo yum install -y cisv-cli
 # or: sudo zypper install -y cisv-cli
@@ -126,7 +126,7 @@ On each `v*` tag, the release workflow now:
 Required release secrets for Packagecloud publication:
 
 - `PACKAGECLOUD_TOKEN`
-- `PACKAGECLOUD_REPO` (format: `owner/repo`)
+- `PACKAGECLOUD_REPO` (value: `sanix-darker/cisv-cli`)
 
 ## UPSTREAM CORE
 

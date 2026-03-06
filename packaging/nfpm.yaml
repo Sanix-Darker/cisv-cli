@@ -1,7 +1,7 @@
 name: cisv-cli
 arch: amd64
 platform: linux
-version: "{{ .Env.VERSION }}"
+version: "0.0.0"
 section: utils
 priority: optional
 maintainer: Sanix-Darker <s4nixd@gmail.com>

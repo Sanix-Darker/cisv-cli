@@ -55,16 +55,17 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.meta.outputs.version }}"
           mkdir -p dist
+          sed "s/^version: .*/version: \"${VERSION}\"/" packaging/nfpm.yaml > packaging/nfpm.generated.yaml
           tar -czf "dist/cisv-cli-${VERSION}-linux-amd64.tar.gz" -C cli/build cisv -C docs/man cisv.1
 
           docker run --rm -v "$PWD:/work" -w /work ghcr.io/goreleaser/nfpm:v2.41.2 \
-            package --packager deb --config ./packaging/nfpm.yaml \
+            package --packager deb --config ./packaging/nfpm.generated.yaml \
             --target "dist/cisv-cli_${VERSION}_amd64.deb"
           docker run --rm -v "$PWD:/work" -w /work ghcr.io/goreleaser/nfpm:v2.41.2 \
-            package --packager rpm --config ./packaging/nfpm.yaml \
+            package --packager rpm --config ./packaging/nfpm.generated.yaml \
             --target "dist/cisv-cli-${VERSION}-1.x86_64.rpm"
           docker run --rm -v "$PWD:/work" -w /work ghcr.io/goreleaser/nfpm:v2.41.2 \
-            package --packager apk --config ./packaging/nfpm.yaml \
+            package --packager apk --config ./packaging/nfpm.generated.yaml \
             --target "dist/cisv-cli-${VERSION}-r1.x86_64.apk"
 
           sha256sum dist/* > dist/sha256sums.txt

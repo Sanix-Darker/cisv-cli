@@ -47,6 +47,7 @@ endif
 CFLAGS ?= $(BASE_CFLAGS) $(ARCH_CFLAGS)
 LDFLAGS ?= -flto -s $(SECURITY_LDFLAGS)
 CFLAGS += -DCISV_CLI_VERSION=\"$(VERSION)\"
+STATIC ?= 1
 
 # Directories
 SRC_DIR = src
@@ -71,6 +72,10 @@ ifeq ($(UNAME_S),Darwin)
     CFLAGS += -D__APPLE__
 endif
 
+ifeq ($(STATIC),1)
+    LDFLAGS += -static
+endif
+
 # Targets
 .PHONY: all clean install uninstall
 
@@ -84,7 +89,7 @@ $(CORE_DIR)/build/libcisv.a:
 	$(MAKE) -C $(CORE_DIR) static
 
 $(CLI_BIN): $(OBJS) $(CORE_DIR)/build/libcisv.a | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) -L$(CORE_DIR)/build -lcisv $(LDFLAGS) -lm -lpthread
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CORE_DIR)/build/libcisv.a $(LDFLAGS) -lm -lpthread
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(CORE_DIR)/include -c -o $@ $<
