@@ -19,25 +19,31 @@ CLI distribution for CISV.
 #### APT (DEBIAN/UBUNTU)
 
 ```bash
-curl -fsSL https://packagecloud.io/install/repositories/sanix-darker/cisv-cli/script.deb.sh | sudo bash
+TAG="$(curl -fsSL https://api.github.com/repos/Sanix-Darker/cisv-cli/releases/latest | sed -n 's/.*\"tag_name\": \"\\(v[^\"]*\\)\".*/\\1/p')"
+VER="${TAG#v}"
+curl -fLO "https://github.com/Sanix-Darker/cisv-cli/releases/download/${TAG}/cisv-cli_${VER}_amd64.deb"
 sudo apt-get update
-sudo apt-get install -y cisv-cli
+sudo apt-get install -y "./cisv-cli_${VER}_amd64.deb"
 ```
 
 #### DNF/YUM/ZYPPER (RPM-BASED)
 
 ```bash
-curl -fsSL https://packagecloud.io/install/repositories/sanix-darker/cisv-cli/script.rpm.sh | sudo bash
-sudo dnf install -y cisv-cli
-# or: sudo yum install -y cisv-cli
-# or: sudo zypper install -y cisv-cli
+TAG="$(curl -fsSL https://api.github.com/repos/Sanix-Darker/cisv-cli/releases/latest | sed -n 's/.*\"tag_name\": \"\\(v[^\"]*\\)\".*/\\1/p')"
+VER="${TAG#v}"
+curl -fLO "https://github.com/Sanix-Darker/cisv-cli/releases/download/${TAG}/cisv-cli-${VER}-1.x86_64.rpm"
+sudo dnf install -y "./cisv-cli-${VER}-1.x86_64.rpm"
+# or: sudo yum install -y "./cisv-cli-${VER}-1.x86_64.rpm"
+# or: sudo zypper install -y "./cisv-cli-${VER}-1.x86_64.rpm"
 ```
 
 #### APK (ALPINE) FROM RELEASE ARTIFACT
 
 ```bash
-wget https://github.com/Sanix-Darker/cisv-cli/releases/latest/download/cisv-cli-<VERSION>-r1.x86_64.apk
-sudo apk add --allow-untrusted ./cisv-cli-<VERSION>-r1.x86_64.apk
+TAG="$(curl -fsSL https://api.github.com/repos/Sanix-Darker/cisv-cli/releases/latest | sed -n 's/.*\"tag_name\": \"\\(v[^\"]*\\)\".*/\\1/p')"
+VER="${TAG#v}"
+wget "https://github.com/Sanix-Darker/cisv-cli/releases/download/${TAG}/cisv-cli-${VER}-r1.x86_64.apk"
+sudo apk add --allow-untrusted "./cisv-cli-${VER}-r1.x86_64.apk"
 ```
 
 ### FROM SOURCE
