@@ -105,7 +105,7 @@ test: $(CLI_BIN)
 	@echo "Testing CLI..."
 	@echo "a,b,c" > /tmp/test.csv
 	@echo "1,2,3" >> /tmp/test.csv
-	@$(CLI_BIN) -c /tmp/test.csv
-	@$(CLI_BIN) /tmp/test.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) -c /tmp/test.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test.csv
 	@rm /tmp/test.csv
 	@echo "CLI tests passed"
