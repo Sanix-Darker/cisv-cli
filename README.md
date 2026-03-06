@@ -4,14 +4,14 @@
 
 CLI distribution for CISV.
 
-## Features
+## FEATURES
 
 - Fast CSV parsing/counting from shell
 - Column selection and ranged reads
 - Benchmark mode and writer subcommand
 - Same parser core as `cisv-core`
 
-## Installation
+## INSTALLATION
 
 ```bash
 git clone --recurse-submodules https://github.com/Sanix-Darker/cisv-cli
@@ -20,7 +20,7 @@ make all
 sudo make install
 ```
 
-## Core Dependency (Submodule)
+## CORE DEPENDENCY (SUBMODULE)
 
 This repository tracks `cisv-core` via the `./core` git submodule.
 
@@ -32,7 +32,7 @@ git submodule update --init --remote --recursive
 
 CI and release workflows also run this update command, so new `cisv-core` releases are pulled automatically during builds.
 
-## CLI Usage
+## CLI USAGE
 
 ```bash
 cisv [OPTIONS] FILE
@@ -46,16 +46,16 @@ Key options:
 - `-d, --delimiter`: custom delimiter
 - `-t, --trim`: trim whitespace
 
-## Examples
+## EXAMPLES
 
-### Basic
+### BASIC
 
 ```bash
 ./cli/build/cisv examples/sample.csv
 ./cli/build/cisv -c examples/sample.csv
 ```
 
-### Detailed
+### DETAILED
 
 ```bash
 ./cli/build/cisv -s 0,2 examples/sample.csv
@@ -64,14 +64,15 @@ Key options:
 
 More runnable scripts: [`examples/`](./examples)
 
-## Benchmarks
-![CLI Benchmarks](./assets/benchmark-cli.png)
+## BENCHMARKS
 
 ```bash
 docker build -t cisv-cli-bench -f cli/benchmarks/Dockerfile .
 docker run --rm --platform linux/amd64 --cpus=2 --memory=4g cisv-cli-bench
 ```
 
-## Upstream Core
+![CLI Benchmarks](./assets/benchmark-cli.png)
+
+## UPSTREAM CORE
 
 - cisv-core: https://github.com/Sanix-Darker/cisv-core
