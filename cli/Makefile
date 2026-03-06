@@ -110,7 +110,18 @@ test: $(CLI_BIN)
 	@echo "Testing CLI..."
 	@echo "a,b,c" > /tmp/test.csv
 	@echo "1,2,3" >> /tmp/test.csv
+	@echo "4,5,6" >> /tmp/test.csv
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) -c /tmp/test.csv
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --no-header /tmp/test.csv > /tmp/test_no_header.out
+	@grep -q '^1,2,3$$' /tmp/test_no_header.out
+	@grep -q '^4,5,6$$' /tmp/test_no_header.out
+	@cat /tmp/test.csv | env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) - > /tmp/test_stdin.out
+	@grep -q '^a,b,c$$' /tmp/test_stdin.out
+	@grep -q '^1,2,3$$' /tmp/test_stdin.out
+	@cat /tmp/test.csv | env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --no-header - > /tmp/test_stdin_no_header.out
+	@grep -q '^1,2,3$$' /tmp/test_stdin_no_header.out
+	@! grep -q '^a,b,c$$' /tmp/test_stdin_no_header.out
 	@rm /tmp/test.csv
+	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out
 	@echo "CLI tests passed"

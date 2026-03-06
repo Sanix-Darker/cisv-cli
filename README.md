@@ -75,6 +75,9 @@ Key options:
 - `--from-line`, `--to-line`: parse range
 - `-d, --delimiter`: custom delimiter
 - `-t, --trim`: trim whitespace
+- `--no-header`: skip first row in output
+- `--quiet`: suppress non-data stderr logs
+- `--strict`: explicit strict parse mode (default)
 
 ## EXAMPLES
 
@@ -84,6 +87,7 @@ Key options:
 ./cli/build/cisv examples/sample.csv
 ./cli/build/cisv -c examples/sample.csv
 cat examples/sample.csv | ./cli/build/cisv -
+cat examples/sample.csv | ./cli/build/cisv --no-header -
 ```
 
 ### DETAILED

@@ -106,6 +106,8 @@ typedef struct {
     int current_select_pos;
     size_t current_row_num;
     int in_header;
+    int no_header;
+    int quiet;
 
     cisv_config *config;
 } cli_context;
@@ -168,6 +170,17 @@ static void field_callback(void *user, const char *data, size_t len) {
 static void row_callback(void *user) {
     cli_context *ctx = (cli_context *)user;
 
+    if (ctx->no_header && ctx->current_row_num == 0) {
+        for (size_t i = 0; i < ctx->current_field_count; i++) {
+            free(ctx->current_row[i]);
+        }
+        ctx->current_field_count = 0;
+        ctx->current_input_col = 0;
+        ctx->current_select_pos = 0;
+        ctx->current_row_num++;
+        return;
+    }
+
     if (ctx->head > 0 && ctx->current_row_num >= (size_t)ctx->head) {
         for (size_t i = 0; i < ctx->current_field_count; i++) {
             free(ctx->current_row[i]);
@@ -218,7 +231,7 @@ static void row_callback(void *user) {
 
 static void error_callback(void *user, int line, const char *msg) {
     cli_context *ctx = (cli_context *)user;
-    if (!ctx->config->skip_lines_with_error) {
+    if (!ctx->quiet && !ctx->config->skip_lines_with_error) {
         fprintf(stderr, "Error at line %d: %s\n", line, msg);
     }
 }
@@ -240,6 +253,9 @@ static void print_help(const char *prog) {
     printf("  -r, --relaxed           Use relaxed parsing rules\n");
     printf("  --skip-empty            Skip empty lines\n");
     printf("  --skip-errors           Skip lines with parse errors\n");
+    printf("  --strict                Stop on first parse error (default)\n");
+    printf("  --no-header             Skip first row in output\n");
+    printf("  --quiet                 Suppress non-data stderr messages\n");
     printf("  --max-row SIZE          Maximum row size in bytes\n");
     printf("  --from-line N           Start from line N (1-based)\n");
     printf("  --to-line N             Stop at line N\n");
@@ -311,8 +327,15 @@ static int stream_rows_with_iterator(const char *filename, cisv_config *config, 
     char *out_buf = NULL;
     size_t out_buf_cap = 0;
     size_t out_buf_used = 0;
+    size_t input_row_num = 0;
 
     while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
+        if (ctx->no_header && input_row_num == 0) {
+            input_row_num++;
+            continue;
+        }
+        input_row_num++;
+
         if (row_buf_cap == 0) {
             row_buf_cap = 4096;
             row_buf = malloc(row_buf_cap);
@@ -747,6 +770,9 @@ int main(int argc, char *argv[]) {
         {"relaxed", no_argument, 0, 'r'},
         {"skip-empty", no_argument, 0, 1},
         {"skip-errors", no_argument, 0, 2},
+        {"strict", no_argument, 0, 8},
+        {"no-header", no_argument, 0, 9},
+        {"quiet", no_argument, 0, 10},
         {"max-row", required_argument, 0, 3},
         {"from-line", required_argument, 0, 4},
         {"to-line", required_argument, 0, 5},
@@ -851,6 +877,15 @@ int main(int argc, char *argv[]) {
 
             case 2:
                 config.skip_lines_with_error = true;
+                break;
+            case 8:
+                config.skip_lines_with_error = false;
+                break;
+            case 9:
+                ctx.no_header = 1;
+                break;
+            case 10:
+                ctx.quiet = 1;
                 break;
 
             case 3: {
@@ -1019,7 +1054,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (!filename) {
-        fprintf(stderr, "Error: No input file specified\n");
+        if (!ctx.quiet) {
+            fprintf(stderr, "Error: No input file specified\n");
+        }
         print_help(argv[0]);
         free(ctx.current_row);
         free(ctx.select_cols);
@@ -1028,7 +1065,9 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(filename, "-") == 0) {
         if (materialize_stdin_to_temp(stdin_tmp_path, sizeof(stdin_tmp_path)) < 0) {
-            fprintf(stderr, "Error: Failed to read CSV data from stdin\n");
+            if (!ctx.quiet) {
+                fprintf(stderr, "Error: Failed to read CSV data from stdin\n");
+            }
             free(ctx.current_row);
             free(ctx.select_cols);
             return 1;
@@ -1056,7 +1095,9 @@ int main(int argc, char *argv[]) {
     if (output_file) {
         ctx.output = fopen(output_file, "w");
         if (!ctx.output) {
-            perror("fopen");
+            if (!ctx.quiet) {
+                perror("fopen");
+            }
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
             free(ctx.current_row);
             free(ctx.select_cols);
@@ -1091,7 +1132,9 @@ int main(int argc, char *argv[]) {
 
     cisv_parser *parser = cisv_parser_create_with_config(&config);
     if (!parser) {
-        fprintf(stderr, "Failed to create parser\n");
+        if (!ctx.quiet) {
+            fprintf(stderr, "Failed to create parser\n");
+        }
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
@@ -1103,7 +1146,9 @@ int main(int argc, char *argv[]) {
 
     int result = cisv_parser_parse_file(parser, filename);
     if (result < 0) {
-        fprintf(stderr, "Parse error: %s\n", strerror(-result));
+        if (!ctx.quiet) {
+            fprintf(stderr, "Parse error: %s\n", strerror(-result));
+        }
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         cisv_parser_destroy(parser);
         free(ctx.current_row);
