@@ -7,6 +7,7 @@
 #include <getopt.h>
 #include <time.h>
 #include <limits.h>
+#include <unistd.h>
 
 #include "cisv/parser.h"
 #include "cisv/writer.h"
@@ -253,6 +254,7 @@ static void print_help(const char *prog) {
     printf("  %s -c data.csv                 # Count rows\n", prog);
     printf("  %s -d ';' -q '\\'' data.csv     # Use semicolon delimiter\n", prog);
     printf("  %s -t --skip-empty data.csv    # Trim fields and skip empty lines\n", prog);
+    printf("  cat data.csv | %s -            # Parse from stdin\n", prog);
     printf("\nFor write options, use: %s write --help\n", prog);
 }
 
@@ -664,6 +666,66 @@ static int cisv_writer_main(int argc, char *argv[]) {
     return result;
 }
 
+static int materialize_stdin_to_temp(char *out_path, size_t out_path_len) {
+    if (!out_path || out_path_len == 0) {
+        return -1;
+    }
+
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || tmpdir[0] == '\0') {
+        tmpdir = "/tmp";
+    }
+
+    char tmpl[PATH_MAX];
+    if (snprintf(tmpl, sizeof(tmpl), "%s/cisv-stdin-XXXXXX", tmpdir) >= (int)sizeof(tmpl)) {
+        fprintf(stderr, "Error: Temporary path is too long\n");
+        return -1;
+    }
+
+    int fd = mkstemp(tmpl);
+    if (fd < 0) {
+        perror("mkstemp");
+        return -1;
+    }
+
+    FILE *tmpf = fdopen(fd, "wb");
+    if (!tmpf) {
+        perror("fdopen");
+        close(fd);
+        unlink(tmpl);
+        return -1;
+    }
+
+    unsigned char buffer[1 << 16];
+    while (!feof(stdin)) {
+        size_t n = fread(buffer, 1, sizeof(buffer), stdin);
+        if (n > 0 && fwrite(buffer, 1, n, tmpf) != n) {
+            perror("fwrite");
+            fclose(tmpf);
+            unlink(tmpl);
+            return -1;
+        }
+        if (ferror(stdin)) {
+            perror("fread");
+            fclose(tmpf);
+            unlink(tmpl);
+            return -1;
+        }
+    }
+
+    if (fclose(tmpf) != 0) {
+        perror("fclose");
+        unlink(tmpl);
+        return -1;
+    }
+
+    if (snprintf(out_path, out_path_len, "%s", tmpl) >= (int)out_path_len) {
+        unlink(tmpl);
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "write") == 0) {
         return cisv_writer_main(argc - 1, argv + 1);
@@ -716,6 +778,7 @@ int main(int argc, char *argv[]) {
     const char *filename = NULL;
     const char *output_file = NULL;
     int benchmark = 0;
+    char stdin_tmp_path[PATH_MAX] = {0};
 
     while ((opt = getopt_long(argc, argv, "hvd:q:e:m:trs:co:b", long_options, &option_index)) != -1) {
         switch (opt) {
@@ -951,6 +1014,10 @@ int main(int argc, char *argv[]) {
         filename = argv[optind];
     }
 
+    if (!filename && !isatty(STDIN_FILENO)) {
+        filename = "-";
+    }
+
     if (!filename) {
         fprintf(stderr, "Error: No input file specified\n");
         print_help(argv[0]);
@@ -959,8 +1026,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (strcmp(filename, "-") == 0) {
+        if (materialize_stdin_to_temp(stdin_tmp_path, sizeof(stdin_tmp_path)) < 0) {
+            fprintf(stderr, "Error: Failed to read CSV data from stdin\n");
+            free(ctx.current_row);
+            free(ctx.select_cols);
+            return 1;
+        }
+        filename = stdin_tmp_path;
+    }
+
     if (benchmark) {
         benchmark_file(filename, &config);
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
         return 0;
@@ -969,6 +1047,7 @@ int main(int argc, char *argv[]) {
     if (ctx.count_only) {
         size_t count = cisv_parser_count_rows_with_config(filename, &config);
         printf("%zu\n", count);
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
         return 0;
@@ -978,6 +1057,7 @@ int main(int argc, char *argv[]) {
         ctx.output = fopen(output_file, "w");
         if (!ctx.output) {
             perror("fopen");
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
             free(ctx.current_row);
             free(ctx.select_cols);
             free(ctx.tail_buffer);
@@ -991,11 +1071,13 @@ int main(int argc, char *argv[]) {
     if (ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL) {
         int iter_result = stream_rows_with_iterator(filename, &config, &ctx);
         if (iter_result < 0) {
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
             free(ctx.current_row);
             free(ctx.select_cols);
             if (ctx.output != stdout) fclose(ctx.output);
             return 1;
         }
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
         if (ctx.output != stdout) fclose(ctx.output);
@@ -1010,6 +1092,7 @@ int main(int argc, char *argv[]) {
     cisv_parser *parser = cisv_parser_create_with_config(&config);
     if (!parser) {
         fprintf(stderr, "Failed to create parser\n");
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
         free(ctx.tail_buffer);
@@ -1021,6 +1104,7 @@ int main(int argc, char *argv[]) {
     int result = cisv_parser_parse_file(parser, filename);
     if (result < 0) {
         fprintf(stderr, "Parse error: %s\n", strerror(-result));
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         cisv_parser_destroy(parser);
         free(ctx.current_row);
         free(ctx.select_cols);
@@ -1056,6 +1140,7 @@ int main(int argc, char *argv[]) {
     }
 
     cisv_parser_destroy(parser);
+    if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
     free(ctx.current_row);
     free(ctx.select_cols);
 

@@ -115,6 +115,9 @@ Count rows only:
 Select columns 0 and 2:
 .B cisv \-s 0,2 data.csv
 .TP
+Parse stdin stream:
+.B cat data.csv | cisv -
+.TP
 Generate one million rows:
 .B cisv write \-g 1000000 \-o out.csv
 .SH EXIT STATUS

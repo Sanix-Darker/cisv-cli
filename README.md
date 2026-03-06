@@ -83,6 +83,7 @@ Key options:
 ```bash
 ./cli/build/cisv examples/sample.csv
 ./cli/build/cisv -c examples/sample.csv
+cat examples/sample.csv | ./cli/build/cisv -
 ```
 
 ### DETAILED
