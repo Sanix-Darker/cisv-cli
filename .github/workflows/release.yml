@@ -79,18 +79,17 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*
-      - name: Publish .deb/.rpm to Packagecloud
-        if: ${{ secrets.PACKAGECLOUD_TOKEN != '' && secrets.PACKAGECLOUD_REPO != '' }}
+      - name: Publish .deb/.rpm to Packagecloud (optional)
         env:
           PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
           PACKAGECLOUD_REPO: ${{ secrets.PACKAGECLOUD_REPO }}
         run: |
           set -euo pipefail
+          if [ -z "${PACKAGECLOUD_TOKEN:-}" ] || [ -z "${PACKAGECLOUD_REPO:-}" ]; then
+            echo "PACKAGECLOUD_TOKEN or PACKAGECLOUD_REPO is not configured; skipping apt/rpm repo publish."
+            exit 0
+          fi
           gem install package_cloud --no-document
           package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb
           package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb
           package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm
-      - name: Packagecloud publish skipped
-        if: ${{ secrets.PACKAGECLOUD_TOKEN == '' || secrets.PACKAGECLOUD_REPO == '' }}
-        run: |
-          echo "PACKAGECLOUD_TOKEN or PACKAGECLOUD_REPO is not configured; skipping apt/rpm repo publish."
