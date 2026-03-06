@@ -14,11 +14,23 @@ CLI distribution for CISV.
 ## Installation
 
 ```bash
-git clone https://github.com/Sanix-Darker/cisv-cli
+git clone --recurse-submodules https://github.com/Sanix-Darker/cisv-cli
 cd cisv-cli
 make all
 sudo make install
 ```
+
+## Core Dependency (Submodule)
+
+This repository tracks `cisv-core` via the `./core` git submodule.
+
+To fetch the latest `cisv-core` (main branch) in your local clone:
+
+```bash
+git submodule update --init --remote --recursive
+```
+
+CI and release workflows also run this update command, so new `cisv-core` releases are pulled automatically during builds.
 
 ## CLI Usage
 
