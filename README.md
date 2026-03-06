@@ -75,9 +75,12 @@ Key options:
 - `--from-line`, `--to-line`: parse range
 - `-d, --delimiter`: custom delimiter
 - `-t, --trim`: trim whitespace
+- `--select-name`: select columns by header names
+- `--where`: filter rows (e.g. `status==ok`, `latency>100`, `name~john`)
 - `--no-header`: skip first row in output
 - `--quiet`: suppress non-data stderr logs
 - `--strict`: explicit strict parse mode (default)
+- `--json`, `--jsonl`: machine-readable output
 
 ## EXAMPLES
 
@@ -88,6 +91,9 @@ Key options:
 ./cli/build/cisv -c examples/sample.csv
 cat examples/sample.csv | ./cli/build/cisv -
 cat examples/sample.csv | ./cli/build/cisv --no-header -
+./cli/build/cisv --select-name a,c examples/sample.csv
+./cli/build/cisv --where 'a==1' examples/sample.csv
+./cli/build/cisv --json examples/sample.csv
 ```
 
 ### DETAILED

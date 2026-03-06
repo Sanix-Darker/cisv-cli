@@ -108,6 +108,24 @@ typedef struct {
     int in_header;
     int no_header;
     int quiet;
+    int output_mode; /* 0=csv, 1=json, 2=jsonl */
+    int json_started;
+
+    char **header_fields;
+    size_t header_field_count;
+
+    char **select_names;
+    int select_name_count;
+    int select_names_resolved;
+
+    int where_enabled;
+    char *where_column;
+    char *where_value;
+    int where_is_name;
+    int where_col_idx;
+    int where_op; /* 0==,1!=,2>,3>=,4<,5<=,6contains */
+    int where_value_is_number;
+    double where_value_number;
 
     cisv_config *config;
 } cli_context;
@@ -118,30 +136,254 @@ static int compare_ints_asc(const void *a, const void *b) {
     return (ia > ib) - (ia < ib);
 }
 
-static void field_callback(void *user, const char *data, size_t len) {
-    cli_context *ctx = (cli_context *)user;
-    int should_store = 1;
+static int parse_double_strict(const char *s, double *out) {
+    if (!s || !*s || !out) return 0;
+    char *end = NULL;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (errno != 0 || end == s || *end != '\0') return 0;
+    *out = v;
+    return 1;
+}
 
-    if (ctx->select_cols && ctx->select_count > 0) {
-        should_store = 0;
-        int current_col = (int)ctx->current_input_col;
-
-        while (ctx->current_select_pos < ctx->select_count &&
-               ctx->select_cols[ctx->current_select_pos] < current_col) {
-            ctx->current_select_pos++;
+static void json_write_escaped(FILE *out, const char *s) {
+    fputc('"', out);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+            case '"':  fputs("\\\"", out); break;
+            case '\\': fputs("\\\\", out); break;
+            case '\b': fputs("\\b", out); break;
+            case '\f': fputs("\\f", out); break;
+            case '\n': fputs("\\n", out); break;
+            case '\r': fputs("\\r", out); break;
+            case '\t': fputs("\\t", out); break;
+            default:
+                if (*p < 0x20) {
+                    fprintf(out, "\\u%04x", *p);
+                } else {
+                    fputc(*p, out);
+                }
         }
+    }
+    fputc('"', out);
+}
 
-        if (ctx->current_select_pos < ctx->select_count &&
-            ctx->select_cols[ctx->current_select_pos] == current_col) {
-            should_store = 1;
-            ctx->current_select_pos++;
+static int parse_name_list(const char *arg, char ***out_names, int *out_count) {
+    if (!arg || !out_names || !out_count) return -1;
+    char *copy = strdup(arg);
+    if (!copy) return -1;
+    int count = 1;
+    for (char *p = copy; *p; p++) {
+        if (*p == ',') count++;
+    }
+    char **names = calloc((size_t)count, sizeof(char *));
+    if (!names) {
+        free(copy);
+        return -1;
+    }
+    int i = 0;
+    char *tok = strtok(copy, ",");
+    while (tok && i < count) {
+        names[i] = strdup(tok);
+        if (!names[i]) {
+            for (int j = 0; j < i; j++) free(names[j]);
+            free(names);
+            free(copy);
+            return -1;
+        }
+        i++;
+        tok = strtok(NULL, ",");
+    }
+    free(copy);
+    *out_names = names;
+    *out_count = i;
+    return 0;
+}
+
+static int resolve_header_index(cli_context *ctx, const char *name) {
+    if (!ctx || !name) return -1;
+    for (size_t i = 0; i < ctx->header_field_count; i++) {
+        if (strcmp(ctx->header_fields[i], name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static int parse_where_expr(cli_context *ctx, const char *expr) {
+    if (!ctx || !expr || !*expr) return -1;
+    const char *ops[] = {"==", "!=", ">=", "<=", ">", "<", "~"};
+    int op_codes[] = {0, 1, 3, 5, 2, 4, 6};
+    const int nops = 7;
+    const char *pos = NULL;
+    int op = -1;
+    int op_len = 0;
+    for (int i = 0; i < nops; i++) {
+        const char *p = strstr(expr, ops[i]);
+        if (p) {
+            pos = p;
+            op = op_codes[i];
+            op_len = (int)strlen(ops[i]);
+            break;
+        }
+    }
+    if (!pos || op < 0) return -1;
+
+    size_t lhs_len = (size_t)(pos - expr);
+    const char *rhs_start = pos + op_len;
+    while (lhs_len > 0 && (expr[lhs_len - 1] == ' ' || expr[lhs_len - 1] == '\t')) lhs_len--;
+    while (*rhs_start == ' ' || *rhs_start == '\t') rhs_start++;
+    if (lhs_len == 0 || *rhs_start == '\0') return -1;
+
+    char *lhs = strndup(expr, lhs_len);
+    char *rhs = strdup(rhs_start);
+    if (!lhs || !rhs) {
+        free(lhs);
+        free(rhs);
+        return -1;
+    }
+    for (char *p = rhs + strlen(rhs) - 1; p >= rhs && (*p == ' ' || *p == '\t'); p--) {
+        *p = '\0';
+    }
+    size_t rhs_len = strlen(rhs);
+    if (rhs_len >= 2 && ((rhs[0] == '"' && rhs[rhs_len - 1] == '"') ||
+                         (rhs[0] == '\'' && rhs[rhs_len - 1] == '\''))) {
+        rhs[rhs_len - 1] = '\0';
+        memmove(rhs, rhs + 1, rhs_len - 1);
+    }
+
+    ctx->where_column = lhs;
+    ctx->where_value = rhs;
+    ctx->where_op = op;
+    ctx->where_col_idx = -1;
+    char *endptr = NULL;
+    errno = 0;
+    long parsed = strtol(lhs, &endptr, 10);
+    if (errno == 0 && endptr && *endptr == '\0' && parsed >= 0 && parsed <= INT_MAX) {
+        ctx->where_is_name = 0;
+        ctx->where_col_idx = (int)parsed;
+    } else {
+        ctx->where_is_name = 1;
+    }
+    ctx->where_value_is_number = parse_double_strict(rhs, &ctx->where_value_number);
+    ctx->where_enabled = 1;
+    return 0;
+}
+
+static int row_matches_where(cli_context *ctx, char **row, size_t field_count) {
+    if (!ctx || !ctx->where_enabled) return 1;
+    int idx = ctx->where_col_idx;
+    if (idx < 0 || (size_t)idx >= field_count) return 0;
+    const char *v = row[idx] ? row[idx] : "";
+
+    if (ctx->where_op == 6) {
+        return strstr(v, ctx->where_value) != NULL;
+    }
+
+    double lhs_num = 0.0;
+    int lhs_is_num = parse_double_strict(v, &lhs_num);
+    if (lhs_is_num && ctx->where_value_is_number) {
+        switch (ctx->where_op) {
+            case 0: return lhs_num == ctx->where_value_number;
+            case 1: return lhs_num != ctx->where_value_number;
+            case 2: return lhs_num > ctx->where_value_number;
+            case 3: return lhs_num >= ctx->where_value_number;
+            case 4: return lhs_num < ctx->where_value_number;
+            case 5: return lhs_num <= ctx->where_value_number;
+            default: return 0;
         }
     }
 
-    ctx->current_input_col++;
-    if (!should_store) {
+    int cmp = strcmp(v, ctx->where_value);
+    switch (ctx->where_op) {
+        case 0: return cmp == 0;
+        case 1: return cmp != 0;
+        case 2: return cmp > 0;
+        case 3: return cmp >= 0;
+        case 4: return cmp < 0;
+        case 5: return cmp <= 0;
+        default: return 0;
+    }
+}
+
+static void output_row(cli_context *ctx, char **row, size_t field_count) {
+    int first = 1;
+    if (ctx->output_mode == 1) {
+        if (!ctx->json_started) {
+            fputc('[', ctx->output);
+            ctx->json_started = 1;
+        } else {
+            fputc(',', ctx->output);
+        }
+    }
+
+    if (ctx->output_mode == 1 || ctx->output_mode == 2) {
+        if (ctx->header_field_count > 0 && !ctx->no_header) {
+            fputc('{', ctx->output);
+            if (ctx->select_count > 0) {
+                for (int i = 0; i < ctx->select_count; i++) {
+                    int col = ctx->select_cols[i];
+                    if (col < 0 || (size_t)col >= field_count || (size_t)col >= ctx->header_field_count) continue;
+                    if (!first) fputc(',', ctx->output);
+                    json_write_escaped(ctx->output, ctx->header_fields[col]);
+                    fputc(':', ctx->output);
+                    json_write_escaped(ctx->output, row[col]);
+                    first = 0;
+                }
+            } else {
+                for (size_t i = 0; i < field_count && i < ctx->header_field_count; i++) {
+                    if (!first) fputc(',', ctx->output);
+                    json_write_escaped(ctx->output, ctx->header_fields[i]);
+                    fputc(':', ctx->output);
+                    json_write_escaped(ctx->output, row[i]);
+                    first = 0;
+                }
+            }
+            fputc('}', ctx->output);
+        } else {
+            fputc('[', ctx->output);
+            if (ctx->select_count > 0) {
+                for (int i = 0; i < ctx->select_count; i++) {
+                    int col = ctx->select_cols[i];
+                    if (col < 0 || (size_t)col >= field_count) continue;
+                    if (!first) fputc(',', ctx->output);
+                    json_write_escaped(ctx->output, row[col]);
+                    first = 0;
+                }
+            } else {
+                for (size_t i = 0; i < field_count; i++) {
+                    if (!first) fputc(',', ctx->output);
+                    json_write_escaped(ctx->output, row[i]);
+                    first = 0;
+                }
+            }
+            fputc(']', ctx->output);
+        }
+        if (ctx->output_mode == 2) {
+            fputc('\n', ctx->output);
+        }
         return;
     }
+
+    if (ctx->select_count > 0) {
+        for (int i = 0; i < ctx->select_count; i++) {
+            int col = ctx->select_cols[i];
+            if (col < 0 || (size_t)col >= field_count) continue;
+            if (!first) fprintf(ctx->output, "%c", ctx->config->delimiter);
+            fprintf(ctx->output, "%s", row[col]);
+            first = 0;
+        }
+    } else {
+        for (size_t i = 0; i < field_count; i++) {
+            if (!first) fprintf(ctx->output, "%c", ctx->config->delimiter);
+            fprintf(ctx->output, "%s", row[i]);
+            first = 0;
+        }
+    }
+    fprintf(ctx->output, "\n");
+}
+
+static void field_callback(void *user, const char *data, size_t len) {
+    cli_context *ctx = (cli_context *)user;
+    ctx->current_input_col++;
 
     if (ctx->current_field_count >= ctx->current_field_capacity) {
         size_t new_capacity = ctx->current_field_capacity * 2;
@@ -170,7 +412,59 @@ static void field_callback(void *user, const char *data, size_t len) {
 static void row_callback(void *user) {
     cli_context *ctx = (cli_context *)user;
 
+    if (ctx->current_row_num == 0) {
+        if (ctx->header_fields) {
+            for (size_t i = 0; i < ctx->header_field_count; i++) free(ctx->header_fields[i]);
+            free(ctx->header_fields);
+            ctx->header_fields = NULL;
+        }
+        ctx->header_field_count = ctx->current_field_count;
+        ctx->header_fields = calloc(ctx->header_field_count, sizeof(char *));
+        if (!ctx->header_fields) {
+            fprintf(stderr, "Memory allocation failed\n");
+            exit(1);
+        }
+        for (size_t i = 0; i < ctx->header_field_count; i++) {
+            ctx->header_fields[i] = strdup(ctx->current_row[i] ? ctx->current_row[i] : "");
+        }
+
+        if (ctx->select_names && ctx->select_name_count > 0 && !ctx->select_names_resolved) {
+            if (ctx->select_cols) {
+                free(ctx->select_cols);
+                ctx->select_cols = NULL;
+                ctx->select_count = 0;
+            }
+            ctx->select_cols = calloc((size_t)ctx->select_name_count, sizeof(int));
+            if (!ctx->select_cols) {
+                fprintf(stderr, "Memory allocation failed\n");
+                exit(1);
+            }
+            int resolved = 0;
+            for (int i = 0; i < ctx->select_name_count; i++) {
+                int idx = resolve_header_index(ctx, ctx->select_names[i]);
+                if (idx >= 0) ctx->select_cols[resolved++] = idx;
+            }
+            ctx->select_count = resolved;
+            qsort(ctx->select_cols, ctx->select_count, sizeof(int), compare_ints_asc);
+            ctx->select_names_resolved = 1;
+        }
+
+        if (ctx->where_enabled && ctx->where_is_name && ctx->where_col_idx < 0) {
+            ctx->where_col_idx = resolve_header_index(ctx, ctx->where_column);
+        }
+    }
+
     if (ctx->no_header && ctx->current_row_num == 0) {
+        for (size_t i = 0; i < ctx->current_field_count; i++) {
+            free(ctx->current_row[i]);
+        }
+        ctx->current_field_count = 0;
+        ctx->current_input_col = 0;
+        ctx->current_select_pos = 0;
+        ctx->current_row_num++;
+        return;
+    }
+    if (ctx->output_mode != 0 && !ctx->no_header && ctx->current_row_num == 0) {
         for (size_t i = 0; i < ctx->current_field_count; i++) {
             free(ctx->current_row[i]);
         }
@@ -211,21 +505,18 @@ static void row_callback(void *user) {
         }
         ctx->current_field_count = 0;
     } else {
-        int first = 1;
+        if (row_matches_where(ctx, ctx->current_row, ctx->current_field_count)) {
+            output_row(ctx, ctx->current_row, ctx->current_field_count);
+            ctx->row_count++;
+        }
         for (size_t i = 0; i < ctx->current_field_count; i++) {
-            if (!first) fprintf(ctx->output, "%c", ctx->config->delimiter);
-            fprintf(ctx->output, "%s", ctx->current_row[i]);
-            first = 0;
-
             free(ctx->current_row[i]);
         }
-        fprintf(ctx->output, "\n");
         ctx->current_field_count = 0;
     }
 
     ctx->current_input_col = 0;
     ctx->current_select_pos = 0;
-    ctx->row_count++;
     ctx->current_row_num++;
 }
 
@@ -260,16 +551,23 @@ static void print_help(const char *prog) {
     printf("  --from-line N           Start from line N (1-based)\n");
     printf("  --to-line N             Stop at line N\n");
     printf("  -s, --select COLS       Select columns (comma-separated indices)\n");
+    printf("  --select-name NAMES     Select columns by header names\n");
+    printf("  --where EXPR            Filter rows (col==v, col!=v, col>n, col~text)\n");
     printf("  -c, --count             Show only row count\n");
     printf("  --head N                Show first N rows\n");
     printf("  --tail N                Show last N rows\n");
     printf("  -o, --output FILE       Write to FILE instead of stdout\n");
+    printf("  --json                  Output JSON array\n");
+    printf("  --jsonl                 Output JSON lines\n");
     printf("  -b, --benchmark         Run benchmark mode\n");
     printf("\nExamples:\n");
     printf("  %s data.csv                    # Parse and display CSV\n", prog);
     printf("  %s -c data.csv                 # Count rows\n", prog);
     printf("  %s -d ';' -q '\\'' data.csv     # Use semicolon delimiter\n", prog);
     printf("  %s -t --skip-empty data.csv    # Trim fields and skip empty lines\n", prog);
+    printf("  %s --select-name id,name data.csv\n", prog);
+    printf("  %s --where 'status==ok' data.csv\n", prog);
+    printf("  %s --json data.csv\n", prog);
     printf("  cat data.csv | %s -            # Parse from stdin\n", prog);
     printf("\nFor write options, use: %s write --help\n", prog);
 }
@@ -777,10 +1075,14 @@ int main(int argc, char *argv[]) {
         {"from-line", required_argument, 0, 4},
         {"to-line", required_argument, 0, 5},
         {"select", required_argument, 0, 's'},
+        {"select-name", required_argument, 0, 11},
+        {"where", required_argument, 0, 12},
         {"count", no_argument, 0, 'c'},
         {"head", required_argument, 0, 6},
         {"tail", required_argument, 0, 7},
         {"output", required_argument, 0, 'o'},
+        {"json", no_argument, 0, 13},
+        {"jsonl", no_argument, 0, 14},
         {"benchmark", no_argument, 0, 'b'},
         {0, 0, 0, 0}
     };
@@ -960,6 +1262,33 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
+            case 11: {
+                if (parse_name_list(optarg, &ctx.select_names, &ctx.select_name_count) != 0) {
+                    fprintf(stderr, "Error: Invalid --select-name value\n");
+                    free(ctx.current_row);
+                    free(ctx.select_cols);
+                    return 1;
+                }
+                break;
+            }
+
+            case 12:
+                if (parse_where_expr(&ctx, optarg) != 0) {
+                    fprintf(stderr, "Error: Invalid --where expression\n");
+                    free(ctx.current_row);
+                    free(ctx.select_cols);
+                    return 1;
+                }
+                break;
+
+            case 13:
+                ctx.output_mode = 1;
+                break;
+
+            case 14:
+                ctx.output_mode = 2;
+                break;
+
             case 'c':
                 ctx.count_only = 1;
                 break;
@@ -1109,7 +1438,9 @@ int main(int argc, char *argv[]) {
     setvbuf(ctx.output, NULL, _IOFBF, 1 << 20);
 
     // Fast path: iterator avoids per-field allocations for common full-stream output.
-    if (ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL) {
+    if (ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL &&
+        ctx.output_mode == 0 && !ctx.where_enabled &&
+        !(ctx.select_names && ctx.select_name_count > 0)) {
         int iter_result = stream_rows_with_iterator(filename, &config, &ctx);
         if (iter_result < 0) {
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
@@ -1165,14 +1496,13 @@ int main(int argc, char *argv[]) {
             size_t idx = (start + i) % ctx.tail;
             if (!ctx.tail_buffer[idx]) continue;
 
-            int first = 1;
-            for (size_t j = 0; j < ctx.tail_field_counts[idx]; j++) {
-                if (!first) fprintf(ctx.output, "%c", config.delimiter);
-                fprintf(ctx.output, "%s", ctx.tail_buffer[idx][j]);
-                free(ctx.tail_buffer[idx][j]);
-                first = 0;
+            if (row_matches_where(&ctx, ctx.tail_buffer[idx], ctx.tail_field_counts[idx])) {
+                output_row(&ctx, ctx.tail_buffer[idx], ctx.tail_field_counts[idx]);
+                ctx.row_count++;
             }
-            fprintf(ctx.output, "\n");
+            for (size_t j = 0; j < ctx.tail_field_counts[idx]; j++) {
+                free(ctx.tail_buffer[idx][j]);
+            }
             free(ctx.tail_buffer[idx]);
         }
         free(ctx.tail_buffer);
@@ -1185,6 +1515,13 @@ int main(int argc, char *argv[]) {
     }
 
     cisv_parser_destroy(parser);
+    if (ctx.output_mode == 1) {
+        if (!ctx.json_started) {
+            fputs("[]\n", ctx.output);
+        } else {
+            fputs("]\n", ctx.output);
+        }
+    }
     if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
     free(ctx.current_row);
     free(ctx.select_cols);
