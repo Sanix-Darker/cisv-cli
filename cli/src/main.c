@@ -11,6 +11,10 @@
 #include "cisv/parser.h"
 #include "cisv/writer.h"
 
+#ifndef CISV_CLI_VERSION
+#define CISV_CLI_VERSION "dev"
+#endif
+
 /**
  * SECURITY: Safe integer parsing with overflow protection.
  * Returns 0 on success, -1 on error (overflow, invalid input, negative when not allowed).
@@ -721,7 +725,7 @@ int main(int argc, char *argv[]) {
                 return 0;
 
             case 'v':
-                printf("cisv version 0.2.6\n");
+                printf("cisv version %s\n", CISV_CLI_VERSION);
                 printf("Features: configurable parsing, SIMD optimizations\n");
                 free(ctx.current_row);
                 return 0;

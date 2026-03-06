@@ -10,14 +10,44 @@ CLI distribution for CISV.
 - Column selection and ranged reads
 - Benchmark mode and writer subcommand
 - Same parser core as `cisv-core`
+- Ships a man page (`man cisv`)
 
 ## INSTALLATION
+
+### FROM PACKAGE MANAGERS
+
+#### APT (DEBIAN/UBUNTU)
+
+```bash
+curl -fsSL https://packagecloud.io/install/repositories/<owner>/<repo>/script.deb.sh | sudo bash
+sudo apt-get update
+sudo apt-get install -y cisv-cli
+```
+
+#### DNF/YUM/ZYPPER (RPM-BASED)
+
+```bash
+curl -fsSL https://packagecloud.io/install/repositories/<owner>/<repo>/script.rpm.sh | sudo bash
+sudo dnf install -y cisv-cli
+# or: sudo yum install -y cisv-cli
+# or: sudo zypper install -y cisv-cli
+```
+
+#### APK (ALPINE) FROM RELEASE ARTIFACT
+
+```bash
+wget https://github.com/Sanix-Darker/cisv-cli/releases/latest/download/cisv-cli-<VERSION>-r1.x86_64.apk
+sudo apk add --allow-untrusted ./cisv-cli-<VERSION>-r1.x86_64.apk
+```
+
+### FROM SOURCE
 
 ```bash
 git clone --recurse-submodules https://github.com/Sanix-Darker/cisv-cli
 cd cisv-cli
 make all
 sudo make install
+man cisv
 ```
 
 ## CORE DEPENDENCY (SUBMODULE)
@@ -72,6 +102,20 @@ docker run --rm --platform linux/amd64 --cpus=2 --memory=4g cisv-cli-bench
 ```
 
 ![CLI Benchmarks](./assets/benchmark-cli.png)
+
+## RELEASE PACKAGING
+
+On each `v*` tag, the release workflow now:
+
+- builds and tests `cisv-cli`
+- produces `tar.gz`, `.deb`, `.rpm`, and `.apk` artifacts
+- publishes artifacts to GitHub Releases
+- optionally publishes `.deb`/`.rpm` into Packagecloud repos for `apt` and `rpm` package managers
+
+Required release secrets for Packagecloud publication:
+
+- `PACKAGECLOUD_TOKEN`
+- `PACKAGECLOUD_REPO` (format: `owner/repo`)
 
 ## UPSTREAM CORE
 

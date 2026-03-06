@@ -1,0 +1,37 @@
+name: cisv-cli
+arch: amd64
+platform: linux
+version: "{{ .Env.VERSION }}"
+section: utils
+priority: optional
+maintainer: Sanix-Darker <s4nixd@gmail.com>
+description: |
+  cisv-cli is a high-performance CSV parser and writer CLI backed by cisv-core.
+vendor: Sanix-Darker
+homepage: https://github.com/Sanix-Darker/cisv-cli
+license: MIT
+
+contents:
+  - src: ./cli/build/cisv
+    dst: /usr/bin/cisv
+    file_info:
+      mode: 0755
+  - src: ./docs/man/cisv.1
+    dst: /usr/share/man/man1/cisv.1
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  postremove: ./packaging/scripts/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.31)
+  rpm:
+    depends:
+      - glibc
+  apk:
+    depends:
+      - musl

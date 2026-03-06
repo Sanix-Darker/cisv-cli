@@ -1,5 +1,6 @@
 # CISV CLI Makefile
 CC ?= gcc
+VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo dev)
 
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
@@ -45,6 +46,7 @@ endif
 
 CFLAGS ?= $(BASE_CFLAGS) $(ARCH_CFLAGS)
 LDFLAGS ?= -flto -s $(SECURITY_LDFLAGS)
+CFLAGS += -DCISV_CLI_VERSION=\"$(VERSION)\"
 
 # Directories
 SRC_DIR = src
@@ -93,9 +95,12 @@ PREFIX ?= /usr/local
 install: $(CLI_BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(CLI_BIN) $(PREFIX)/bin/cisv
+	install -d $(PREFIX)/share/man/man1
+	install -m 644 ../docs/man/cisv.1 $(PREFIX)/share/man/man1/cisv.1
 
 uninstall:
 	rm -f $(PREFIX)/bin/cisv
+	rm -f $(PREFIX)/share/man/man1/cisv.1
 
 clean:
 	rm -rf $(BUILD_DIR)

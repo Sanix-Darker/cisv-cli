@@ -1,0 +1,132 @@
+.TH CISV 1 "March 2026" "cisv-cli 0.4.6" "User Commands"
+.SH NAME
+cisv \- high-performance CSV parser and writer CLI
+.SH SYNOPSIS
+.B cisv
+[\fBCOMMAND\fR] [\fBOPTIONS\fR] [\fBFILE\fR]
+.br
+.B cisv
+\fBwrite\fR [\fBOPTIONS\fR]
+.SH DESCRIPTION
+\fBcisv\fR is a high-performance CSV command-line tool backed by \fBcisv-core\fR.
+It supports parsing, row counting, column selection, head/tail output, benchmarking,
+and CSV generation through the \fBwrite\fR subcommand.
+.SH COMMANDS
+.TP
+.B parse
+Parse a CSV file (default command when no command is provided).
+.TP
+.B write
+Generate CSV output and benchmark writer throughput.
+.SH PARSE OPTIONS
+.TP
+.B \-h, \-\-help
+Show help.
+.TP
+.B \-v, \-\-version
+Show version.
+.TP
+.B \-d, \-\-delimiter \fIDELIM\fR
+Set field delimiter (default: \fB,\fR).
+.TP
+.B \-q, \-\-quote \fICHAR\fR
+Set quote character (default: \fB"\fR).
+.TP
+.B \-e, \-\-escape \fICHAR\fR
+Set escape character.
+.TP
+.B \-m, \-\-comment \fICHAR\fR
+Set comment character.
+.TP
+.B \-t, \-\-trim
+Trim whitespace from fields.
+.TP
+.B \-r, \-\-relaxed
+Enable relaxed parsing.
+.TP
+.B \-\-skip-empty
+Skip empty lines.
+.TP
+.B \-\-skip-errors
+Skip lines with parse errors.
+.TP
+.B \-\-max-row \fISIZE\fR
+Set max row size in bytes.
+.TP
+.B \-\-from-line \fIN\fR
+Start from line \fIN\fR (1-based).
+.TP
+.B \-\-to-line \fIN\fR
+Stop at line \fIN\fR.
+.TP
+.B \-s, \-\-select \fICOLS\fR
+Select comma-separated column indices.
+.TP
+.B \-c, \-\-count
+Print row count only.
+.TP
+.B \-\-head \fIN\fR
+Print first \fIN\fR rows.
+.TP
+.B \-\-tail \fIN\fR
+Print last \fIN\fR rows.
+.TP
+.B \-o, \-\-output \fIFILE\fR
+Write output to file instead of stdout.
+.TP
+.B \-b, \-\-benchmark
+Run parser benchmark mode.
+.SH WRITE OPTIONS
+.TP
+.B \-g, \-\-generate \fIN\fR
+Generate \fIN\fR rows of synthetic CSV data.
+.TP
+.B \-o, \-\-output \fIFILE\fR
+Write output to file.
+.TP
+.B \-d, \-\-delimiter \fICHAR\fR
+Set output delimiter.
+.TP
+.B \-q, \-\-quote \fICHAR\fR
+Set output quote character.
+.TP
+.B \-Q, \-\-always-quote
+Always quote output fields.
+.TP
+.B \-r, \-\-crlf
+Use CRLF line endings.
+.TP
+.B \-n, \-\-null \fISTRING\fR
+Text to output for NULL fields.
+.TP
+.B \-c, \-\-columns \fILIST\fR
+Column names for generation mode.
+.TP
+.B \-b, \-\-benchmark
+Run writer benchmark mode.
+.SH EXAMPLES
+.TP
+Parse and print:
+.B cisv data.csv
+.TP
+Count rows only:
+.B cisv \-c data.csv
+.TP
+Select columns 0 and 2:
+.B cisv \-s 0,2 data.csv
+.TP
+Generate one million rows:
+.B cisv write \-g 1000000 \-o out.csv
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Failure.
+.SH SEE ALSO
+.BR awk (1),
+.BR cut (1),
+.BR sed (1)
+.SH HOMEPAGE
+https://github.com/Sanix-Darker/cisv-cli
