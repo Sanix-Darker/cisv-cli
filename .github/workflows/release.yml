@@ -56,7 +56,7 @@ jobs:
           VERSION="${{ steps.meta.outputs.version }}"
           mkdir -p dist
           sed "s/^version: .*/version: \"${VERSION}\"/" packaging/nfpm.yaml > packaging/nfpm.generated.yaml
-          tar -czf "dist/cisv-cli-${VERSION}-linux-amd64.tar.gz" -C cli/build cisv -C docs/man cisv.1
+          tar -czf "dist/cisv-cli-${VERSION}-linux-amd64.tar.gz" -C cli/build cisv -C "$GITHUB_WORKSPACE/docs/man" cisv.1
 
           docker run --rm -v "$PWD:/work" -w /work ghcr.io/goreleaser/nfpm:v2.41.2 \
             package --packager deb --config ./packaging/nfpm.generated.yaml \
