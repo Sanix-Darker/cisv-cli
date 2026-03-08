@@ -92,8 +92,18 @@ jobs:
           fi
           sudo gem install package_cloud --no-document
           command -v package_cloud || true
-          package_cloud --version || true
+          package_cloud version || true
           ls -lh dist
-          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb
-          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb
-          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm
+
+          if ! sudo -E package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb 2>/tmp/pc-ubuntu.err; then
+            cat /tmp/pc-ubuntu.err
+            exit 1
+          fi
+          if ! sudo -E package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb 2>/tmp/pc-debian.err; then
+            cat /tmp/pc-debian.err
+            exit 1
+          fi
+          if ! sudo -E package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm 2>/tmp/pc-el.err; then
+            cat /tmp/pc-el.err
+            exit 1
+          fi
