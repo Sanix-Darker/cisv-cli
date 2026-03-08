@@ -99,7 +99,7 @@ jobs:
             local file_glob="$2"
             local out
             set +e
-            out="$(sudo -E package_cloud push "${target}" ${file_glob} 2>&1)"
+            out="$(script -qefc "sudo -E package_cloud push \"${target}\" ${file_glob}" /dev/null 2>&1)"
             rc=$?
             set -e
             printf "%s\n" "$out"
