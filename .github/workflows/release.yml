@@ -90,7 +90,7 @@ jobs:
             echo "PACKAGECLOUD_TOKEN or PACKAGECLOUD_REPO is not configured; skipping apt/rpm repo publish."
             exit 0
           fi
-          gem install package_cloud --no-document
+          sudo gem install package_cloud --no-document
           package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb
           package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb
           package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm
