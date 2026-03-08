@@ -120,20 +120,6 @@ docker run --rm --platform linux/amd64 --cpus=2 --memory=4g cisv-cli-bench
 
 ![CLI Benchmarks](./assets/benchmark-cli.png)
 
-## RELEASE PACKAGING
-
-On each `v*` tag, the release workflow now:
-
-- builds and tests `cisv-cli`
-- produces `tar.gz`, `.deb`, `.rpm`, and `.apk` artifacts
-- publishes artifacts to GitHub Releases
-- optionally publishes `.deb`/`.rpm` into Packagecloud repos for `apt` and `rpm` package managers
-
-Required release secrets for Packagecloud publication:
-
-- `PACKAGECLOUD_TOKEN`
-- `PACKAGECLOUD_REPO` (value: `sanix-darker/cisv-cli`)
-
 ## UPSTREAM CORE
 
 - cisv-core: https://github.com/Sanix-Darker/cisv-core
