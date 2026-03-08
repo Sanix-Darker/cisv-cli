@@ -91,6 +91,9 @@ jobs:
             exit 0
           fi
           sudo gem install package_cloud --no-document
-          package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb
-          package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb
-          package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm
+          command -v package_cloud || true
+          package_cloud --version || true
+          ls -lh dist
+          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/ubuntu/jammy" dist/*.deb
+          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/debian/bookworm" dist/*.deb
+          sudo -E package_cloud push "${PACKAGECLOUD_REPO}/el/9" dist/*.rpm
