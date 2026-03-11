@@ -130,6 +130,11 @@ typedef struct {
     cisv_config *config;
 } cli_context;
 
+typedef struct {
+    char **fields;
+    size_t field_count;
+} cli_owned_row;
+
 static int compare_ints_asc(const void *a, const void *b) {
     int ia = *(const int *)a;
     int ib = *(const int *)b;
@@ -144,6 +149,22 @@ static int parse_double_strict(const char *s, double *out) {
     if (errno != 0 || end == s || *end != '\0') return 0;
     *out = v;
     return 1;
+}
+
+static char **duplicate_row_fields(char **row, size_t field_count) {
+    char **copy = calloc(field_count, sizeof(char *));
+    if (!copy) return NULL;
+
+    for (size_t i = 0; i < field_count; i++) {
+        copy[i] = strdup(row[i] ? row[i] : "");
+        if (!copy[i]) {
+            for (size_t j = 0; j < i; j++) free(copy[j]);
+            free(copy);
+            return NULL;
+        }
+    }
+
+    return copy;
 }
 
 static void json_write_escaped(FILE *out, const char *s) {
@@ -559,6 +580,8 @@ static void print_help(const char *prog) {
     printf("  -o, --output FILE       Write to FILE instead of stdout\n");
     printf("  --json                  Output JSON array\n");
     printf("  --jsonl                 Output JSON lines\n");
+    printf("  --parallel              Parse file using multiple threads\n");
+    printf("  --threads N             Number of worker threads (implies --parallel)\n");
     printf("  -b, --benchmark         Run benchmark mode\n");
     printf("\nExamples:\n");
     printf("  %s data.csv                    # Parse and display CSV\n", prog);
@@ -567,6 +590,7 @@ static void print_help(const char *prog) {
     printf("  %s -t --skip-empty data.csv    # Trim fields and skip empty lines\n", prog);
     printf("  %s --select-name id,name data.csv\n", prog);
     printf("  %s --where 'status==ok' data.csv\n", prog);
+    printf("  %s --parallel --threads 4 data.csv\n", prog);
     printf("  %s --json data.csv\n", prog);
     printf("  cat data.csv | %s -            # Parse from stdin\n", prog);
     printf("\nFor write options, use: %s write --help\n", prog);
@@ -578,7 +602,30 @@ static double get_time_ms(void) {
     return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 }
 
-static void benchmark_file(const char *filename, cisv_config *config) {
+static int count_rows_parallel(const char *filename, cisv_config *config, int num_threads, size_t *out_count) {
+    if (!out_count) return -1;
+    *out_count = 0;
+
+    int result_count = 0;
+    cisv_result_t **results = cisv_parse_file_parallel(filename, config, num_threads, &result_count);
+    if (!results) {
+        return -1;
+    }
+
+    for (int i = 0; i < result_count; i++) {
+        if (!results[i]) continue;
+        if (results[i]->error_code != 0) {
+            cisv_results_free(results, result_count);
+            return -1;
+        }
+        *out_count += results[i]->row_count;
+    }
+
+    cisv_results_free(results, result_count);
+    return 0;
+}
+
+static void benchmark_file(const char *filename, cisv_config *config, int parallel, int num_threads) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
         perror("fopen");
@@ -596,17 +643,142 @@ static void benchmark_file(const char *filename, cisv_config *config) {
            config->delimiter, config->quote,
            config->trim ? "yes" : "no",
            config->skip_empty_lines ? "yes" : "no");
+    if (parallel) {
+        printf("Mode: parallel (%d threads)%s\n\n",
+               num_threads > 0 ? num_threads : 0,
+               num_threads > 0 ? "" : " (auto)");
+    }
 
     const int iterations = 5;
     for (int i = 0; i < iterations; i++) {
         double start = get_time_ms();
-        size_t count = cisv_parser_count_rows_with_config(filename, config);
+        size_t count = 0;
+        int rc = parallel
+            ? count_rows_parallel(filename, config, num_threads, &count)
+            : 0;
+        if (!parallel) {
+            count = cisv_parser_count_rows_with_config(filename, config);
+        } else if (rc != 0) {
+            fprintf(stderr, "Parallel benchmark parse failed\n");
+            return;
+        }
         double end = get_time_ms();
 
         double throughput = size_mb / ((end - start) / 1000.0);
         printf("Run %d: %.2f ms, %zu rows, %.2f MB/s\n",
                i + 1, end - start, count, throughput);
     }
+}
+
+static int process_parallel_row(cli_context *ctx, char **row, size_t field_count) {
+    if (ctx->current_row_num == 0) {
+        if (ctx->header_fields) {
+            for (size_t i = 0; i < ctx->header_field_count; i++) free(ctx->header_fields[i]);
+            free(ctx->header_fields);
+            ctx->header_fields = NULL;
+        }
+        ctx->header_field_count = field_count;
+        ctx->header_fields = duplicate_row_fields(row, field_count);
+        if (!ctx->header_fields) {
+            fprintf(stderr, "Memory allocation failed\n");
+            return -1;
+        }
+
+        if (ctx->select_names && ctx->select_name_count > 0 && !ctx->select_names_resolved) {
+            if (ctx->select_cols) {
+                free(ctx->select_cols);
+                ctx->select_cols = NULL;
+                ctx->select_count = 0;
+            }
+            ctx->select_cols = calloc((size_t)ctx->select_name_count, sizeof(int));
+            if (!ctx->select_cols) {
+                fprintf(stderr, "Memory allocation failed\n");
+                return -1;
+            }
+            int resolved = 0;
+            for (int i = 0; i < ctx->select_name_count; i++) {
+                int idx = resolve_header_index(ctx, ctx->select_names[i]);
+                if (idx >= 0) ctx->select_cols[resolved++] = idx;
+            }
+            ctx->select_count = resolved;
+            qsort(ctx->select_cols, ctx->select_count, sizeof(int), compare_ints_asc);
+            ctx->select_names_resolved = 1;
+        }
+
+        if (ctx->where_enabled && ctx->where_is_name && ctx->where_col_idx < 0) {
+            ctx->where_col_idx = resolve_header_index(ctx, ctx->where_column);
+        }
+    }
+
+    if (ctx->no_header && ctx->current_row_num == 0) {
+        ctx->current_row_num++;
+        return 0;
+    }
+    if (ctx->output_mode != 0 && !ctx->no_header && ctx->current_row_num == 0) {
+        ctx->current_row_num++;
+        return 0;
+    }
+    if (ctx->head > 0 && ctx->current_row_num >= (size_t)ctx->head) {
+        ctx->current_row_num++;
+        return 0;
+    }
+
+    if (ctx->tail > 0) {
+        char **row_copy = duplicate_row_fields(row, field_count);
+        if (!row_copy) {
+            fprintf(stderr, "Memory allocation failed\n");
+            return -1;
+        }
+        if (ctx->tail_buffer[ctx->tail_pos]) {
+            for (size_t i = 0; i < ctx->tail_field_counts[ctx->tail_pos]; i++) {
+                free(ctx->tail_buffer[ctx->tail_pos][i]);
+            }
+            free(ctx->tail_buffer[ctx->tail_pos]);
+        }
+        ctx->tail_buffer[ctx->tail_pos] = row_copy;
+        ctx->tail_field_counts[ctx->tail_pos] = field_count;
+        ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
+    } else {
+        if (row_matches_where(ctx, row, field_count)) {
+            output_row(ctx, row, field_count);
+            ctx->row_count++;
+        }
+    }
+
+    ctx->current_row_num++;
+    return 0;
+}
+
+static int parse_file_parallel_cli(const char *filename, cisv_config *config, cli_context *ctx, int num_threads) {
+    int result_count = 0;
+    cisv_result_t **results = cisv_parse_file_parallel(filename, config, num_threads, &result_count);
+    if (!results) {
+        perror("cisv_parse_file_parallel");
+        return -1;
+    }
+
+    for (int chunk = 0; chunk < result_count; chunk++) {
+        cisv_result_t *result = results[chunk];
+        if (!result) continue;
+        if (result->error_code != 0) {
+            if (!ctx->quiet) {
+                fprintf(stderr, "Parse error: %s\n", result->error_message);
+            }
+            cisv_results_free(results, result_count);
+            return -1;
+        }
+
+        for (size_t i = 0; i < result->row_count; i++) {
+            cisv_row_t *row = &result->rows[i];
+            if (process_parallel_row(ctx, row->fields, row->field_count) != 0) {
+                cisv_results_free(results, result_count);
+                return -1;
+            }
+        }
+    }
+
+    cisv_results_free(results, result_count);
+    return 0;
 }
 
 static int stream_rows_with_iterator(const char *filename, cisv_config *config, cli_context *ctx) {
@@ -1083,6 +1255,8 @@ int main(int argc, char *argv[]) {
         {"output", required_argument, 0, 'o'},
         {"json", no_argument, 0, 13},
         {"jsonl", no_argument, 0, 14},
+        {"parallel", no_argument, 0, 15},
+        {"threads", required_argument, 0, 16},
         {"benchmark", no_argument, 0, 'b'},
         {0, 0, 0, 0}
     };
@@ -1106,6 +1280,8 @@ int main(int argc, char *argv[]) {
     const char *filename = NULL;
     const char *output_file = NULL;
     int benchmark = 0;
+    int parallel = 0;
+    int num_threads = 0;
     char stdin_tmp_path[PATH_MAX] = {0};
 
     while ((opt = getopt_long(argc, argv, "hvd:q:e:m:trs:co:b", long_options, &option_index)) != -1) {
@@ -1300,6 +1476,17 @@ int main(int argc, char *argv[]) {
             case 'b':
                 benchmark = 1;
                 break;
+            case 15:
+                parallel = 1;
+                break;
+            case 16:
+                if (safe_parse_int(optarg, &num_threads, 0) != 0) {
+                    free(ctx.current_row);
+                    free(ctx.select_cols);
+                    return 1;
+                }
+                parallel = 1;
+                break;
 
             case 6: {
                 int head_val;
@@ -1405,7 +1592,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (benchmark) {
-        benchmark_file(filename, &config);
+        benchmark_file(filename, &config, parallel, num_threads);
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
         free(ctx.select_cols);
@@ -1413,7 +1600,20 @@ int main(int argc, char *argv[]) {
     }
 
     if (ctx.count_only) {
-        size_t count = cisv_parser_count_rows_with_config(filename, &config);
+        size_t count = 0;
+        if (parallel) {
+            if (count_rows_parallel(filename, &config, num_threads, &count) != 0) {
+                if (!ctx.quiet) {
+                    fprintf(stderr, "Parallel count failed\n");
+                }
+                if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+                free(ctx.current_row);
+                free(ctx.select_cols);
+                return 1;
+            }
+        } else {
+            count = cisv_parser_count_rows_with_config(filename, &config);
+        }
         printf("%zu\n", count);
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
         free(ctx.current_row);
@@ -1438,7 +1638,7 @@ int main(int argc, char *argv[]) {
     setvbuf(ctx.output, NULL, _IOFBF, 1 << 20);
 
     // Fast path: iterator avoids per-field allocations for common full-stream output.
-    if (ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL &&
+    if (!parallel && ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL &&
         ctx.output_mode == 0 && !ctx.where_enabled &&
         !(ctx.select_names && ctx.select_name_count > 0)) {
         int iter_result = stream_rows_with_iterator(filename, &config, &ctx);
@@ -1456,38 +1656,58 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    config.field_cb = field_callback;
-    config.row_cb = row_callback;
-    config.error_cb = error_callback;
-    config.user = &ctx;
-
-    cisv_parser *parser = cisv_parser_create_with_config(&config);
-    if (!parser) {
-        if (!ctx.quiet) {
-            fprintf(stderr, "Failed to create parser\n");
+    if (parallel) {
+        int parallel_result = parse_file_parallel_cli(filename, &config, &ctx, num_threads);
+        if (parallel_result < 0) {
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+            free(ctx.current_row);
+            free(ctx.select_cols);
+            free(ctx.tail_buffer);
+            free(ctx.tail_field_counts);
+            if (ctx.output != stdout) fclose(ctx.output);
+            return 1;
         }
-        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        free(ctx.current_row);
-        free(ctx.select_cols);
-        free(ctx.tail_buffer);
-        free(ctx.tail_field_counts);
-        if (ctx.output != stdout) fclose(ctx.output);
-        return 1;
-    }
+    } else {
+        config.field_cb = field_callback;
+        config.row_cb = row_callback;
+        config.error_cb = error_callback;
+        config.user = &ctx;
 
-    int result = cisv_parser_parse_file(parser, filename);
-    if (result < 0) {
-        if (!ctx.quiet) {
-            fprintf(stderr, "Parse error: %s\n", strerror(-result));
+        cisv_parser *parser = cisv_parser_create_with_config(&config);
+        if (!parser) {
+            if (!ctx.quiet) {
+                fprintf(stderr, "Failed to create parser\n");
+            }
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+            free(ctx.current_row);
+            free(ctx.select_cols);
+            free(ctx.tail_buffer);
+            free(ctx.tail_field_counts);
+            if (ctx.output != stdout) fclose(ctx.output);
+            return 1;
         }
-        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+
+        int result = cisv_parser_parse_file(parser, filename);
+        if (result < 0) {
+            if (!ctx.quiet) {
+                fprintf(stderr, "Parse error: %s\n", strerror(-result));
+            }
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+            cisv_parser_destroy(parser);
+            free(ctx.current_row);
+            free(ctx.select_cols);
+            free(ctx.tail_buffer);
+            free(ctx.tail_field_counts);
+            if (ctx.output != stdout) fclose(ctx.output);
+            return 1;
+        }
+
+        if (getenv("CISV_STATS")) {
+            fprintf(stderr, "Rows processed: %zu\n", ctx.row_count);
+            fprintf(stderr, "Current line: %d\n", cisv_parser_get_line_number(parser));
+        }
+
         cisv_parser_destroy(parser);
-        free(ctx.current_row);
-        free(ctx.select_cols);
-        free(ctx.tail_buffer);
-        free(ctx.tail_field_counts);
-        if (ctx.output != stdout) fclose(ctx.output);
-        return 1;
     }
 
     if (ctx.tail > 0 && ctx.tail_buffer) {
@@ -1508,13 +1728,6 @@ int main(int argc, char *argv[]) {
         free(ctx.tail_buffer);
         free(ctx.tail_field_counts);
     }
-
-    if (getenv("CISV_STATS")) {
-        fprintf(stderr, "Rows processed: %zu\n", ctx.row_count);
-        fprintf(stderr, "Current line: %d\n", cisv_parser_get_line_number(parser));
-    }
-
-    cisv_parser_destroy(parser);
     if (ctx.output_mode == 1) {
         if (!ctx.json_started) {
             fputs("[]\n", ctx.output);
