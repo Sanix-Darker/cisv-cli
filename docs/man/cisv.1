@@ -116,6 +116,12 @@ Output JSON array format.
 .B \-\-jsonl
 Output JSON Lines format.
 .TP
+.B \-\-parallel
+Use multi-threaded parsing.
+.TP
+.B \-\-threads \fIN\fR
+Set worker thread count for parallel mode. Also enables \fB--parallel\fR.
+.TP
 .B \-b, \-\-benchmark
 Run parser benchmark mode.
 .SH WHERE EXPRESSIONS
@@ -182,6 +188,9 @@ Select by header name:
 .TP
 Filter rows:
 .B cisv --where 'status==ok' data.csv
+.TP
+Parse with four worker threads:
+.B cisv --parallel --threads 4 data.csv
 .TP
 Filter by numeric threshold:
 .B cisv --where 'latency_ms>100' data.csv
