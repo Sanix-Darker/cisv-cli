@@ -11,11 +11,13 @@ PORTABLE ?= 0
 # -D_FORTIFY_SOURCE=2: Detect buffer overflows in string/memory functions
 # -fPIE / -pie: Position Independent Executable for ASLR
 # -Wl,-z,relro,-z,now: Full RELRO - make GOT read-only after relocation
-# -fstack-check: Check for stack overflow at runtime
-SECURITY_CFLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fstack-check -fPIE
+SECURITY_CFLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
 SECURITY_LDFLAGS =
 
-BASE_CFLAGS = -O3 -pipe -fomit-frame-pointer -Wall -Wextra -std=c11 -flto \
+CC_VERSION := $(shell $(CC) --version 2>/dev/null | head -n 1)
+CC_IS_CLANG := $(findstring clang,$(CC_VERSION))
+
+BASE_CFLAGS = -O3 -pipe -fomit-frame-pointer -Wall -Wextra -std=c11 \
               -ffast-math -funroll-loops $(SECURITY_CFLAGS)
 
 ifeq ($(PORTABLE),1)
@@ -36,7 +38,11 @@ else
     else ifeq ($(UNAME_M),amd64)
         ARCH_CFLAGS = -march=native -mavx2 -mtune=native
     else ifeq ($(UNAME_M),arm64)
-        ARCH_CFLAGS = -mcpu=native
+        ifeq ($(UNAME_S),Darwin)
+            ARCH_CFLAGS =
+        else
+            ARCH_CFLAGS = -mcpu=native
+        endif
     else ifeq ($(UNAME_M),aarch64)
         ARCH_CFLAGS = -march=native
     else
@@ -44,8 +50,19 @@ else
     endif
 endif
 
-CFLAGS ?= $(BASE_CFLAGS) $(ARCH_CFLAGS)
-LDFLAGS ?= -flto -s $(SECURITY_LDFLAGS)
+LTO_CFLAGS =
+LTO_LDFLAGS =
+
+ifneq ($(CC_IS_CLANG),)
+    LTO_CFLAGS =
+    LTO_LDFLAGS =
+else
+    LTO_CFLAGS = -flto
+    LTO_LDFLAGS = -flto
+endif
+
+CFLAGS ?= $(BASE_CFLAGS) $(ARCH_CFLAGS) $(LTO_CFLAGS)
+LDFLAGS ?= $(LTO_LDFLAGS) -s $(SECURITY_LDFLAGS)
 CFLAGS += -DCISV_CLI_VERSION=\"$(VERSION)\"
 STATIC ?= 1
 
@@ -70,6 +87,7 @@ endif
 ifeq ($(UNAME_S),Darwin)
     SECURITY_LDFLAGS =
     CFLAGS += -D__APPLE__
+    STATIC := 0
 endif
 
 ifeq ($(STATIC),1)
