@@ -1,5 +1,7 @@
-.PHONY: core cli all test clean
+.PHONY: update-core core cli all test clean
 all: core cli
+update-core:
+	git submodule update --init --remote --recursive core
 core:
 	$(MAKE) -C core/core all
 cli: core
