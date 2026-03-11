@@ -151,7 +151,7 @@ static int parse_double_strict(const char *s, double *out) {
     return 1;
 }
 
-static char **duplicate_row_fields(char **row, size_t field_count) {
+static char **duplicate_row_fields(const char *const *row, size_t field_count) {
     char **copy = calloc(field_count, sizeof(char *));
     if (!copy) return NULL;
 
@@ -289,7 +289,7 @@ static int parse_where_expr(cli_context *ctx, const char *expr) {
     return 0;
 }
 
-static int row_matches_where(cli_context *ctx, char **row, size_t field_count) {
+static int row_matches_where(cli_context *ctx, const char *const *row, size_t field_count) {
     if (!ctx || !ctx->where_enabled) return 1;
     int idx = ctx->where_col_idx;
     if (idx < 0 || (size_t)idx >= field_count) return 0;
@@ -325,7 +325,7 @@ static int row_matches_where(cli_context *ctx, char **row, size_t field_count) {
     }
 }
 
-static void output_row(cli_context *ctx, char **row, size_t field_count) {
+static void output_row(cli_context *ctx, const char *const *row, size_t field_count) {
     int first = 1;
     if (ctx->output_mode == 1) {
         if (!ctx->json_started) {
@@ -402,51 +402,18 @@ static void output_row(cli_context *ctx, char **row, size_t field_count) {
     fprintf(ctx->output, "\n");
 }
 
-static void field_callback(void *user, const char *data, size_t len) {
-    cli_context *ctx = (cli_context *)user;
-    ctx->current_input_col++;
-
-    if (ctx->current_field_count >= ctx->current_field_capacity) {
-        size_t new_capacity = ctx->current_field_capacity * 2;
-        if (new_capacity < 16) new_capacity = 16;
-
-        char **new_row = realloc(ctx->current_row, new_capacity * sizeof(char *));
-        if (!new_row) {
-            fprintf(stderr, "Failed to allocate memory for fields\n");
-            exit(1);
-        }
-        ctx->current_row = new_row;
-        ctx->current_field_capacity = new_capacity;
-    }
-
-    ctx->current_row[ctx->current_field_count] = malloc(len + 1);
-    if (!ctx->current_row[ctx->current_field_count]) {
-        fprintf(stderr, "Failed to allocate memory for field data\n");
-        exit(1);
-    }
-
-    memcpy(ctx->current_row[ctx->current_field_count], data, len);
-    ctx->current_row[ctx->current_field_count][len] = '\0';
-    ctx->current_field_count++;
-}
-
-static void row_callback(void *user) {
-    cli_context *ctx = (cli_context *)user;
-
+static int prepare_header_state(cli_context *ctx, const char *const *row, size_t field_count) {
     if (ctx->current_row_num == 0) {
         if (ctx->header_fields) {
             for (size_t i = 0; i < ctx->header_field_count; i++) free(ctx->header_fields[i]);
             free(ctx->header_fields);
             ctx->header_fields = NULL;
         }
-        ctx->header_field_count = ctx->current_field_count;
-        ctx->header_fields = calloc(ctx->header_field_count, sizeof(char *));
+        ctx->header_field_count = field_count;
+        ctx->header_fields = duplicate_row_fields(row, field_count);
         if (!ctx->header_fields) {
             fprintf(stderr, "Memory allocation failed\n");
-            exit(1);
-        }
-        for (size_t i = 0; i < ctx->header_field_count; i++) {
-            ctx->header_fields[i] = strdup(ctx->current_row[i] ? ctx->current_row[i] : "");
+            return -1;
         }
 
         if (ctx->select_names && ctx->select_name_count > 0 && !ctx->select_names_resolved) {
@@ -458,7 +425,7 @@ static void row_callback(void *user) {
             ctx->select_cols = calloc((size_t)ctx->select_name_count, sizeof(int));
             if (!ctx->select_cols) {
                 fprintf(stderr, "Memory allocation failed\n");
-                exit(1);
+                return -1;
             }
             int resolved = 0;
             for (int i = 0; i < ctx->select_name_count; i++) {
@@ -474,37 +441,26 @@ static void row_callback(void *user) {
             ctx->where_col_idx = resolve_header_index(ctx, ctx->where_column);
         }
     }
+    return 0;
+}
+
+static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t field_count) {
+    if (prepare_header_state(ctx, row, field_count) != 0) {
+        return -1;
+    }
 
     if (ctx->no_header && ctx->current_row_num == 0) {
-        for (size_t i = 0; i < ctx->current_field_count; i++) {
-            free(ctx->current_row[i]);
-        }
-        ctx->current_field_count = 0;
-        ctx->current_input_col = 0;
-        ctx->current_select_pos = 0;
         ctx->current_row_num++;
-        return;
+        return 0;
     }
     if (ctx->output_mode != 0 && !ctx->no_header && ctx->current_row_num == 0) {
-        for (size_t i = 0; i < ctx->current_field_count; i++) {
-            free(ctx->current_row[i]);
-        }
-        ctx->current_field_count = 0;
-        ctx->current_input_col = 0;
-        ctx->current_select_pos = 0;
         ctx->current_row_num++;
-        return;
+        return 0;
     }
 
     if (ctx->head > 0 && ctx->current_row_num >= (size_t)ctx->head) {
-        for (size_t i = 0; i < ctx->current_field_count; i++) {
-            free(ctx->current_row[i]);
-        }
-        ctx->current_field_count = 0;
-        ctx->current_input_col = 0;
-        ctx->current_select_pos = 0;
         ctx->current_row_num++;
-        return;
+        return 0;
     }
 
     if (ctx->tail > 0) {
@@ -515,37 +471,24 @@ static void row_callback(void *user) {
             free(ctx->tail_buffer[ctx->tail_pos]);
         }
 
-        ctx->tail_buffer[ctx->tail_pos] = ctx->current_row;
-        ctx->tail_field_counts[ctx->tail_pos] = ctx->current_field_count;
-        ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
-
-        ctx->current_row = calloc(ctx->current_field_capacity, sizeof(char *));
-        if (!ctx->current_row) {
-            fprintf(stderr, "Failed to allocate memory for new row\n");
-            exit(1);
+        char **row_copy = duplicate_row_fields(row, field_count);
+        if (!row_copy) {
+            fprintf(stderr, "Memory allocation failed\n");
+            return -1;
         }
-        ctx->current_field_count = 0;
+
+        ctx->tail_buffer[ctx->tail_pos] = row_copy;
+        ctx->tail_field_counts[ctx->tail_pos] = field_count;
+        ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
     } else {
-        if (row_matches_where(ctx, ctx->current_row, ctx->current_field_count)) {
-            output_row(ctx, ctx->current_row, ctx->current_field_count);
+        if (row_matches_where(ctx, row, field_count)) {
+            output_row(ctx, row, field_count);
             ctx->row_count++;
         }
-        for (size_t i = 0; i < ctx->current_field_count; i++) {
-            free(ctx->current_row[i]);
-        }
-        ctx->current_field_count = 0;
     }
 
-    ctx->current_input_col = 0;
-    ctx->current_select_pos = 0;
     ctx->current_row_num++;
-}
-
-static void error_callback(void *user, int line, const char *msg) {
-    cli_context *ctx = (cli_context *)user;
-    if (!ctx->quiet && !ctx->config->skip_lines_with_error) {
-        fprintf(stderr, "Error at line %d: %s\n", line, msg);
-    }
+    return 0;
 }
 
 static void print_help(const char *prog) {
@@ -670,85 +613,6 @@ static void benchmark_file(const char *filename, cisv_config *config, int parall
     }
 }
 
-static int process_parallel_row(cli_context *ctx, char **row, size_t field_count) {
-    if (ctx->current_row_num == 0) {
-        if (ctx->header_fields) {
-            for (size_t i = 0; i < ctx->header_field_count; i++) free(ctx->header_fields[i]);
-            free(ctx->header_fields);
-            ctx->header_fields = NULL;
-        }
-        ctx->header_field_count = field_count;
-        ctx->header_fields = duplicate_row_fields(row, field_count);
-        if (!ctx->header_fields) {
-            fprintf(stderr, "Memory allocation failed\n");
-            return -1;
-        }
-
-        if (ctx->select_names && ctx->select_name_count > 0 && !ctx->select_names_resolved) {
-            if (ctx->select_cols) {
-                free(ctx->select_cols);
-                ctx->select_cols = NULL;
-                ctx->select_count = 0;
-            }
-            ctx->select_cols = calloc((size_t)ctx->select_name_count, sizeof(int));
-            if (!ctx->select_cols) {
-                fprintf(stderr, "Memory allocation failed\n");
-                return -1;
-            }
-            int resolved = 0;
-            for (int i = 0; i < ctx->select_name_count; i++) {
-                int idx = resolve_header_index(ctx, ctx->select_names[i]);
-                if (idx >= 0) ctx->select_cols[resolved++] = idx;
-            }
-            ctx->select_count = resolved;
-            qsort(ctx->select_cols, ctx->select_count, sizeof(int), compare_ints_asc);
-            ctx->select_names_resolved = 1;
-        }
-
-        if (ctx->where_enabled && ctx->where_is_name && ctx->where_col_idx < 0) {
-            ctx->where_col_idx = resolve_header_index(ctx, ctx->where_column);
-        }
-    }
-
-    if (ctx->no_header && ctx->current_row_num == 0) {
-        ctx->current_row_num++;
-        return 0;
-    }
-    if (ctx->output_mode != 0 && !ctx->no_header && ctx->current_row_num == 0) {
-        ctx->current_row_num++;
-        return 0;
-    }
-    if (ctx->head > 0 && ctx->current_row_num >= (size_t)ctx->head) {
-        ctx->current_row_num++;
-        return 0;
-    }
-
-    if (ctx->tail > 0) {
-        char **row_copy = duplicate_row_fields(row, field_count);
-        if (!row_copy) {
-            fprintf(stderr, "Memory allocation failed\n");
-            return -1;
-        }
-        if (ctx->tail_buffer[ctx->tail_pos]) {
-            for (size_t i = 0; i < ctx->tail_field_counts[ctx->tail_pos]; i++) {
-                free(ctx->tail_buffer[ctx->tail_pos][i]);
-            }
-            free(ctx->tail_buffer[ctx->tail_pos]);
-        }
-        ctx->tail_buffer[ctx->tail_pos] = row_copy;
-        ctx->tail_field_counts[ctx->tail_pos] = field_count;
-        ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
-    } else {
-        if (row_matches_where(ctx, row, field_count)) {
-            output_row(ctx, row, field_count);
-            ctx->row_count++;
-        }
-    }
-
-    ctx->current_row_num++;
-    return 0;
-}
-
 static int parse_file_parallel_cli(const char *filename, cisv_config *config, cli_context *ctx, int num_threads) {
     int result_count = 0;
     cisv_result_t **results = cisv_parse_file_parallel(filename, config, num_threads, &result_count);
@@ -770,7 +634,7 @@ static int parse_file_parallel_cli(const char *filename, cisv_config *config, cl
 
         for (size_t i = 0; i < result->row_count; i++) {
             cisv_row_t *row = &result->rows[i];
-            if (process_parallel_row(ctx, row->fields, row->field_count) != 0) {
+            if (process_row_for_cli(ctx, (const char *const *)row->fields, row->field_count) != 0) {
                 cisv_results_free(results, result_count);
                 return -1;
             }
@@ -778,6 +642,37 @@ static int parse_file_parallel_cli(const char *filename, cisv_config *config, cl
     }
 
     cisv_results_free(results, result_count);
+    return 0;
+}
+
+static int parse_file_with_iterator_cli(const char *filename, cisv_config *config, cli_context *ctx) {
+    cisv_iterator_t *it = cisv_iterator_open(filename, config);
+    if (!it) {
+        perror("cisv_iterator_open");
+        return -1;
+    }
+
+    const char **fields = NULL;
+    const size_t *lengths = NULL;
+    size_t field_count = 0;
+    int rc;
+
+    while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
+        (void)lengths;
+        if (process_row_for_cli(ctx, fields, field_count) != 0) {
+            cisv_iterator_close(it);
+            return -1;
+        }
+    }
+
+    cisv_iterator_close(it);
+    if (rc == CISV_ITER_ERROR) {
+        if (!ctx->quiet) {
+            fprintf(stderr, "Parse error while iterating rows\n");
+        }
+        return -1;
+    }
+
     return 0;
 }
 
@@ -1219,6 +1114,49 @@ static int materialize_stdin_to_temp(char *out_path, size_t out_path_len) {
     return 0;
 }
 
+static void cleanup_cli_context(cli_context *ctx) {
+    if (!ctx) {
+        return;
+    }
+
+    free(ctx->current_row);
+    free(ctx->select_cols);
+
+    if (ctx->select_names) {
+        for (int i = 0; i < ctx->select_name_count; i++) {
+            free(ctx->select_names[i]);
+        }
+        free(ctx->select_names);
+    }
+
+    free(ctx->where_column);
+    free(ctx->where_value);
+
+    if (ctx->header_fields) {
+        for (size_t i = 0; i < ctx->header_field_count; i++) {
+            free(ctx->header_fields[i]);
+        }
+        free(ctx->header_fields);
+    }
+
+    if (ctx->tail_buffer) {
+        for (int i = 0; i < ctx->tail; i++) {
+            if (!ctx->tail_buffer[i]) continue;
+            for (size_t j = 0; j < ctx->tail_field_counts[i]; j++) {
+                free(ctx->tail_buffer[i][j]);
+            }
+            free(ctx->tail_buffer[i]);
+        }
+        free(ctx->tail_buffer);
+    }
+
+    free(ctx->tail_field_counts);
+
+    if (ctx->output && ctx->output != stdout) {
+        fclose(ctx->output);
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "write") == 0) {
         return cisv_writer_main(argc - 1, argv + 1);
@@ -1288,25 +1226,25 @@ int main(int argc, char *argv[]) {
         switch (opt) {
             case 'h':
                 print_help(argv[0]);
-                free(ctx.current_row);
+                cleanup_cli_context(&ctx);
                 return 0;
 
             case 'v':
                 printf("cisv version %s\n", CISV_CLI_VERSION);
                 printf("Features: configurable parsing, SIMD optimizations\n");
-                free(ctx.current_row);
+                cleanup_cli_context(&ctx);
                 return 0;
 
             case 'd':
                 // SECURITY: Validate delimiter
                 if (optarg[0] == '\n' || optarg[0] == '\r') {
                     fprintf(stderr, "Error: Delimiter cannot be a newline character\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 if (optarg[0] == '\0') {
                     fprintf(stderr, "Error: Delimiter cannot be empty\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.delimiter = optarg[0];
@@ -1316,12 +1254,12 @@ int main(int argc, char *argv[]) {
                 // SECURITY: Validate quote character
                 if (optarg[0] == '\n' || optarg[0] == '\r') {
                     fprintf(stderr, "Error: Quote character cannot be a newline character\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 if (optarg[0] == '\0') {
                     fprintf(stderr, "Error: Quote character cannot be empty\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.quote = optarg[0];
@@ -1331,7 +1269,7 @@ int main(int argc, char *argv[]) {
                 // SECURITY: Validate escape character
                 if (optarg[0] == '\n' || optarg[0] == '\r') {
                     fprintf(stderr, "Error: Escape character cannot be a newline character\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.escape = optarg[0];
@@ -1369,7 +1307,7 @@ int main(int argc, char *argv[]) {
             case 3: {
                 long max_row;
                 if (safe_parse_long(optarg, &max_row, 0) != 0) {
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.max_row_size = (size_t)max_row;
@@ -1379,7 +1317,7 @@ int main(int argc, char *argv[]) {
             case 4: {
                 int from_line;
                 if (safe_parse_int(optarg, &from_line, 0) != 0) {
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.from_line = from_line;
@@ -1389,7 +1327,7 @@ int main(int argc, char *argv[]) {
             case 5: {
                 int to_line;
                 if (safe_parse_int(optarg, &to_line, 0) != 0) {
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 config.to_line = to_line;
@@ -1400,7 +1338,7 @@ int main(int argc, char *argv[]) {
                 char *cols_copy = strdup(optarg);
                 if (!cols_copy) {
                     fprintf(stderr, "Memory allocation failed\n");
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
 
@@ -1413,7 +1351,7 @@ int main(int argc, char *argv[]) {
                 if (!ctx.select_cols) {
                     fprintf(stderr, "Memory allocation failed\n");
                     free(cols_copy);
-                    free(ctx.current_row);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
 
@@ -1424,8 +1362,7 @@ int main(int argc, char *argv[]) {
                     if (safe_parse_int(tok, &col_idx, 0) != 0) {
                         fprintf(stderr, "Error: Invalid column index '%s'\n", tok);
                         free(cols_copy);
-                        free(ctx.select_cols);
-                        free(ctx.current_row);
+                        cleanup_cli_context(&ctx);
                         return 1;
                     }
                     ctx.select_cols[i++] = col_idx;
@@ -1441,8 +1378,7 @@ int main(int argc, char *argv[]) {
             case 11: {
                 if (parse_name_list(optarg, &ctx.select_names, &ctx.select_name_count) != 0) {
                     fprintf(stderr, "Error: Invalid --select-name value\n");
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 break;
@@ -1451,8 +1387,7 @@ int main(int argc, char *argv[]) {
             case 12:
                 if (parse_where_expr(&ctx, optarg) != 0) {
                     fprintf(stderr, "Error: Invalid --where expression\n");
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 break;
@@ -1481,8 +1416,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 16:
                 if (safe_parse_int(optarg, &num_threads, 0) != 0) {
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 parallel = 1;
@@ -1491,15 +1425,13 @@ int main(int argc, char *argv[]) {
             case 6: {
                 int head_val;
                 if (safe_parse_int(optarg, &head_val, 0) != 0) {
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 // SECURITY: Limit head value to prevent excessive memory allocation
                 if (head_val > 10000000) {
                     fprintf(stderr, "Error: --head value too large (max 10000000)\n");
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 ctx.head = head_val;
@@ -1509,16 +1441,14 @@ int main(int argc, char *argv[]) {
             case 7: {
                 int tail_val;
                 if (safe_parse_int(optarg, &tail_val, 0) != 0) {
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 // SECURITY: Limit tail value to prevent excessive memory allocation
                 // tail buffer allocates tail * sizeof(char**) bytes
                 if (tail_val > 10000000) {
                     fprintf(stderr, "Error: --tail value too large (max 10000000)\n");
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 ctx.tail = tail_val;
@@ -1526,8 +1456,7 @@ int main(int argc, char *argv[]) {
                 ctx.tail_field_counts = calloc(ctx.tail, sizeof(size_t));
                 if (!ctx.tail_buffer || !ctx.tail_field_counts) {
                     fprintf(stderr, "Memory allocation failed\n");
-                    free(ctx.current_row);
-                    free(ctx.select_cols);
+                    cleanup_cli_context(&ctx);
                     return 1;
                 }
                 break;
@@ -1535,8 +1464,7 @@ int main(int argc, char *argv[]) {
 
             default:
                 fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
-                free(ctx.current_row);
-                free(ctx.select_cols);
+                cleanup_cli_context(&ctx);
                 return 1;
         }
     }
@@ -1545,19 +1473,13 @@ int main(int argc, char *argv[]) {
     if (config.delimiter == config.quote) {
         fprintf(stderr, "Error: Delimiter and quote character cannot be the same ('%c')\n",
                 config.delimiter);
-        free(ctx.current_row);
-        free(ctx.select_cols);
-        free(ctx.tail_buffer);
-        free(ctx.tail_field_counts);
+        cleanup_cli_context(&ctx);
         return 1;
     }
     if (config.escape != '\0' && config.escape == config.delimiter) {
         fprintf(stderr, "Error: Escape and delimiter cannot be the same ('%c')\n",
                 config.escape);
-        free(ctx.current_row);
-        free(ctx.select_cols);
-        free(ctx.tail_buffer);
-        free(ctx.tail_field_counts);
+        cleanup_cli_context(&ctx);
         return 1;
     }
 
@@ -1574,8 +1496,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: No input file specified\n");
         }
         print_help(argv[0]);
-        free(ctx.current_row);
-        free(ctx.select_cols);
+        cleanup_cli_context(&ctx);
         return 1;
     }
 
@@ -1584,8 +1505,7 @@ int main(int argc, char *argv[]) {
             if (!ctx.quiet) {
                 fprintf(stderr, "Error: Failed to read CSV data from stdin\n");
             }
-            free(ctx.current_row);
-            free(ctx.select_cols);
+            cleanup_cli_context(&ctx);
             return 1;
         }
         filename = stdin_tmp_path;
@@ -1594,8 +1514,7 @@ int main(int argc, char *argv[]) {
     if (benchmark) {
         benchmark_file(filename, &config, parallel, num_threads);
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        free(ctx.current_row);
-        free(ctx.select_cols);
+        cleanup_cli_context(&ctx);
         return 0;
     }
 
@@ -1607,8 +1526,7 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Parallel count failed\n");
                 }
                 if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-                free(ctx.current_row);
-                free(ctx.select_cols);
+                cleanup_cli_context(&ctx);
                 return 1;
             }
         } else {
@@ -1616,8 +1534,7 @@ int main(int argc, char *argv[]) {
         }
         printf("%zu\n", count);
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        free(ctx.current_row);
-        free(ctx.select_cols);
+        cleanup_cli_context(&ctx);
         return 0;
     }
 
@@ -1628,10 +1545,7 @@ int main(int argc, char *argv[]) {
                 perror("fopen");
             }
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            free(ctx.current_row);
-            free(ctx.select_cols);
-            free(ctx.tail_buffer);
-            free(ctx.tail_field_counts);
+            cleanup_cli_context(&ctx);
             return 1;
         }
     }
@@ -1644,15 +1558,11 @@ int main(int argc, char *argv[]) {
         int iter_result = stream_rows_with_iterator(filename, &config, &ctx);
         if (iter_result < 0) {
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            free(ctx.current_row);
-            free(ctx.select_cols);
-            if (ctx.output != stdout) fclose(ctx.output);
+            cleanup_cli_context(&ctx);
             return 1;
         }
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        free(ctx.current_row);
-        free(ctx.select_cols);
-        if (ctx.output != stdout) fclose(ctx.output);
+        cleanup_cli_context(&ctx);
         return 0;
     }
 
@@ -1660,54 +1570,16 @@ int main(int argc, char *argv[]) {
         int parallel_result = parse_file_parallel_cli(filename, &config, &ctx, num_threads);
         if (parallel_result < 0) {
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            free(ctx.current_row);
-            free(ctx.select_cols);
-            free(ctx.tail_buffer);
-            free(ctx.tail_field_counts);
-            if (ctx.output != stdout) fclose(ctx.output);
+            cleanup_cli_context(&ctx);
             return 1;
         }
     } else {
-        config.field_cb = field_callback;
-        config.row_cb = row_callback;
-        config.error_cb = error_callback;
-        config.user = &ctx;
-
-        cisv_parser *parser = cisv_parser_create_with_config(&config);
-        if (!parser) {
-            if (!ctx.quiet) {
-                fprintf(stderr, "Failed to create parser\n");
-            }
+        int iter_result = parse_file_with_iterator_cli(filename, &config, &ctx);
+        if (iter_result < 0) {
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            free(ctx.current_row);
-            free(ctx.select_cols);
-            free(ctx.tail_buffer);
-            free(ctx.tail_field_counts);
-            if (ctx.output != stdout) fclose(ctx.output);
+            cleanup_cli_context(&ctx);
             return 1;
         }
-
-        int result = cisv_parser_parse_file(parser, filename);
-        if (result < 0) {
-            if (!ctx.quiet) {
-                fprintf(stderr, "Parse error: %s\n", strerror(-result));
-            }
-            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            cisv_parser_destroy(parser);
-            free(ctx.current_row);
-            free(ctx.select_cols);
-            free(ctx.tail_buffer);
-            free(ctx.tail_field_counts);
-            if (ctx.output != stdout) fclose(ctx.output);
-            return 1;
-        }
-
-        if (getenv("CISV_STATS")) {
-            fprintf(stderr, "Rows processed: %zu\n", ctx.row_count);
-            fprintf(stderr, "Current line: %d\n", cisv_parser_get_line_number(parser));
-        }
-
-        cisv_parser_destroy(parser);
     }
 
     if (ctx.tail > 0 && ctx.tail_buffer) {
@@ -1716,17 +1588,11 @@ int main(int argc, char *argv[]) {
             size_t idx = (start + i) % ctx.tail;
             if (!ctx.tail_buffer[idx]) continue;
 
-            if (row_matches_where(&ctx, ctx.tail_buffer[idx], ctx.tail_field_counts[idx])) {
-                output_row(&ctx, ctx.tail_buffer[idx], ctx.tail_field_counts[idx]);
+            if (row_matches_where(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx])) {
+                output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]);
                 ctx.row_count++;
             }
-            for (size_t j = 0; j < ctx.tail_field_counts[idx]; j++) {
-                free(ctx.tail_buffer[idx][j]);
-            }
-            free(ctx.tail_buffer[idx]);
         }
-        free(ctx.tail_buffer);
-        free(ctx.tail_field_counts);
     }
     if (ctx.output_mode == 1) {
         if (!ctx.json_started) {
@@ -1736,12 +1602,7 @@ int main(int argc, char *argv[]) {
         }
     }
     if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-    free(ctx.current_row);
-    free(ctx.select_cols);
-
-    if (ctx.output != stdout) {
-        fclose(ctx.output);
-    }
+    cleanup_cli_context(&ctx);
 
     return 0;
 }
