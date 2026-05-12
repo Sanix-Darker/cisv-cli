@@ -6,6 +6,7 @@
 #
 # Tools compared:
 # - cisv: High-performance C CSV parser with SIMD optimizations
+# - xan: Rust CSV CLI with SIMD parsing and parallel execution
 # - qsv: Rust-based xsv fork with 80+ commands, SIMD-accelerated
 # - xsv: Original Rust CSV toolkit
 # - csvtk: Go-based cross-platform CSV/TSV toolkit
@@ -62,6 +63,18 @@ get_file_size() {
 
 format_number() {
     printf "%'d" "$1" 2>/dev/null || echo "$1"
+}
+
+print_tool_version() {
+    local name="$1"
+    local cmd="$2"
+    if command_exists "$name"; then
+        local version
+        version=$($cmd 2>/dev/null | head -n 1 || true)
+        echo "  ${name}: ${version:-available}"
+    else
+        echo "  ${name}: not installed"
+    fi
 }
 
 # ============================================================================
@@ -272,6 +285,8 @@ main() {
     echo "File size: ${size_mb} MB"
     echo "Iterations: $ITERATIONS"
     echo "Fast mode: $FAST_MODE"
+    echo "CPU cores: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+    echo "Resource env: GOMAXPROCS=${GOMAXPROCS:-unset} GOMEMLIMIT=${GOMEMLIMIT:-unset} CISV_MAX_PROCS=${CISV_MAX_PROCS:-unset} CISV_MAX_MEMORY=${CISV_MAX_MEMORY:-unset} CISV_MAX_ROW_SIZE=${CISV_MAX_ROW_SIZE:-unset}"
     echo "============================================================"
     echo ""
 
@@ -286,6 +301,17 @@ main() {
     elif [ -f "/usr/local/bin/cisv" ]; then
         CISV_BIN="/usr/local/bin/cisv"
     fi
+
+    echo "Tool versions:"
+    if [ -n "$CISV_BIN" ]; then
+        echo "  cisv: $($CISV_BIN --version 2>/dev/null | head -n 1 || echo available)"
+    else
+        echo "  cisv: not available"
+    fi
+    print_tool_version "xan" "xan --version"
+    print_tool_version "qsv" "qsv --version"
+    print_tool_version "xsv" "xsv --version"
+    echo ""
 
     # ========================================================================
     # ROW COUNTING BENCHMARKS
@@ -302,6 +328,14 @@ main() {
     else
         echo "Benchmarking cisv..."
         echo "  Skipped: cisv not available"
+    fi
+
+    # xan count
+    if command_exists xan; then
+        run_benchmark "xan" "xan count \"$filepath\"" "count"
+    else
+        echo "Benchmarking xan..."
+        echo "  Skipped: xan not installed"
     fi
 
     # qsv count
@@ -406,6 +440,11 @@ main() {
     # cisv -s (0-indexed)
     if [ -n "$CISV_BIN" ]; then
         run_benchmark "cisv" "$CISV_BIN -s 0,2,3 \"$filepath\" | wc -l" "select"
+    fi
+
+    # xan select (1-indexed)
+    if command_exists xan; then
+        run_benchmark "xan" "xan select 1,3,4 \"$filepath\" | wc -l" "select"
     fi
 
     # qsv select (1-indexed)

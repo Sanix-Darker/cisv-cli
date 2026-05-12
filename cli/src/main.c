@@ -7,6 +7,7 @@
 #include <getopt.h>
 #include <time.h>
 #include <limits.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include "cisv/parser.h"
@@ -85,6 +86,90 @@ static int safe_parse_long(const char *str, long *result, int allow_negative) {
     return 0;
 }
 
+/**
+ * Parse byte sizes for resource flags. Accepted suffixes mirror the core
+ * runtime parser: K/KB/KiB, M/MB/MiB, G/GB/GiB, and T/TB/TiB.
+ */
+static int safe_parse_size(const char *str, size_t *result) {
+    if (!str || !result || *str == '\0') {
+        return -1;
+    }
+
+    char *endptr;
+    errno = 0;
+    unsigned long long val = strtoull(str, &endptr, 10);
+    if (errno == ERANGE || endptr == str || val == 0) {
+        return -1;
+    }
+
+    unsigned long long multiplier = 1;
+    if (*endptr != '\0') {
+        if ((endptr[0] == 'k' || endptr[0] == 'K') && endptr[1] == '\0') {
+            multiplier = 1024ULL;
+        } else if ((endptr[0] == 'm' || endptr[0] == 'M') && endptr[1] == '\0') {
+            multiplier = 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 'g' || endptr[0] == 'G') && endptr[1] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 't' || endptr[0] == 'T') && endptr[1] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 'k' || endptr[0] == 'K') &&
+                   (endptr[1] == 'b' || endptr[1] == 'B') && endptr[2] == '\0') {
+            multiplier = 1024ULL;
+        } else if ((endptr[0] == 'm' || endptr[0] == 'M') &&
+                   (endptr[1] == 'b' || endptr[1] == 'B') && endptr[2] == '\0') {
+            multiplier = 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 'g' || endptr[0] == 'G') &&
+                   (endptr[1] == 'b' || endptr[1] == 'B') && endptr[2] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 't' || endptr[0] == 'T') &&
+                   (endptr[1] == 'b' || endptr[1] == 'B') && endptr[2] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 'k' || endptr[0] == 'K') &&
+                   (endptr[1] == 'i' || endptr[1] == 'I') &&
+                   (endptr[2] == 'b' || endptr[2] == 'B') && endptr[3] == '\0') {
+            multiplier = 1024ULL;
+        } else if ((endptr[0] == 'm' || endptr[0] == 'M') &&
+                   (endptr[1] == 'i' || endptr[1] == 'I') &&
+                   (endptr[2] == 'b' || endptr[2] == 'B') && endptr[3] == '\0') {
+            multiplier = 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 'g' || endptr[0] == 'G') &&
+                   (endptr[1] == 'i' || endptr[1] == 'I') &&
+                   (endptr[2] == 'b' || endptr[2] == 'B') && endptr[3] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL;
+        } else if ((endptr[0] == 't' || endptr[0] == 'T') &&
+                   (endptr[1] == 'i' || endptr[1] == 'I') &&
+                   (endptr[2] == 'b' || endptr[2] == 'B') && endptr[3] == '\0') {
+            multiplier = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        } else {
+            return -1;
+        }
+    }
+
+    if (val > (unsigned long long)SIZE_MAX / multiplier) {
+        return -1;
+    }
+
+    *result = (size_t)(val * multiplier);
+    return 0;
+}
+
+static int parse_single_byte_option(const char *name, const char *arg, char *out) {
+    if (!name || !arg || !out || arg[0] == '\0') {
+        fprintf(stderr, "Error: %s cannot be empty\n", name ? name : "Option");
+        return -1;
+    }
+    if (arg[1] != '\0') {
+        fprintf(stderr, "Error: %s must be exactly one byte\n", name);
+        return -1;
+    }
+    if (arg[0] == '\n' || arg[0] == '\r') {
+        fprintf(stderr, "Error: %s cannot be a newline character\n", name);
+        return -1;
+    }
+    *out = arg[0];
+    return 0;
+}
+
 typedef struct {
     size_t row_count;
     size_t field_count;
@@ -94,6 +179,7 @@ typedef struct {
     int *select_cols;
     int select_count;
     FILE *output;
+    cisv_writer *csv_writer;
 
     char ***tail_buffer;
     size_t *tail_field_counts;
@@ -134,6 +220,66 @@ typedef struct {
     char **fields;
     size_t field_count;
 } cli_owned_row;
+
+typedef struct {
+    size_t rows;
+    int errors;
+    int quiet;
+} cli_count_context;
+
+static void cli_count_row_cb(void *user) {
+    cli_count_context *ctx = (cli_count_context *)user;
+    ctx->rows++;
+}
+
+static void cli_count_error_cb(void *user, int line, const char *msg) {
+    cli_count_context *ctx = (cli_count_context *)user;
+    ctx->errors++;
+    if (!ctx->quiet) {
+        fprintf(stderr, "Parse error at line %d: %s\n", line, msg ? msg : "unknown error");
+    }
+}
+
+static int count_needs_checked_path(const cisv_config *config) {
+    if (config && config->max_row_size > 0) return 1;
+    return getenv("CISV_MAX_ROW_SIZE") != NULL ||
+           getenv("CISV_MAX_MEMORY") != NULL ||
+           getenv("GOMEMLIMIT") != NULL;
+}
+
+static int count_rows_checked(const char *filename, const cisv_config *config, int quiet, size_t *out_count) {
+    if (!filename || !out_count) return -1;
+
+    cli_count_context count_ctx = {
+        .rows = 0,
+        .errors = 0,
+        .quiet = quiet
+    };
+
+    cisv_config count_config;
+    if (config) {
+        count_config = *config;
+    } else {
+        cisv_config_init(&count_config);
+    }
+    count_config.field_cb = NULL;
+    count_config.row_cb = cli_count_row_cb;
+    count_config.error_cb = cli_count_error_cb;
+    count_config.user = &count_ctx;
+
+    cisv_parser *parser = cisv_parser_create_with_config(&count_config);
+    if (!parser) return -1;
+
+    int rc = cisv_parser_parse_file(parser, filename);
+    cisv_parser_destroy(parser);
+
+    if (rc < 0 || count_ctx.errors > 0) {
+        return -1;
+    }
+
+    *out_count = count_ctx.rows;
+    return 0;
+}
 
 static int compare_ints_asc(const void *a, const void *b) {
     int ia = *(const int *)a;
@@ -325,7 +471,30 @@ static int row_matches_where(cli_context *ctx, const char *const *row, size_t fi
     }
 }
 
-static void output_row(cli_context *ctx, const char *const *row, size_t field_count) {
+static int ensure_csv_writer(cli_context *ctx) {
+    if (!ctx || !ctx->output || !ctx->config) return -1;
+    if (ctx->csv_writer) return 0;
+
+    cisv_writer_config writer_config = {
+        .delimiter = ctx->config->delimiter,
+        .quote_char = ctx->config->quote,
+        .always_quote = 0,
+        .use_crlf = 0,
+        .null_string = "",
+        .buffer_size = 1 << 20
+    };
+
+    ctx->csv_writer = cisv_writer_create_config(ctx->output, &writer_config);
+    if (!ctx->csv_writer) {
+        if (!ctx->quiet) {
+            fprintf(stderr, "Failed to create CSV writer\n");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int output_row(cli_context *ctx, const char *const *row, size_t field_count) {
     int first = 1;
     if (ctx->output_mode == 1) {
         if (!ctx->json_started) {
@@ -381,25 +550,24 @@ static void output_row(cli_context *ctx, const char *const *row, size_t field_co
         if (ctx->output_mode == 2) {
             fputc('\n', ctx->output);
         }
-        return;
+        return 0;
     }
+
+    if (ensure_csv_writer(ctx) != 0) return -1;
 
     if (ctx->select_count > 0) {
         for (int i = 0; i < ctx->select_count; i++) {
             int col = ctx->select_cols[i];
             if (col < 0 || (size_t)col >= field_count) continue;
-            if (!first) fprintf(ctx->output, "%c", ctx->config->delimiter);
-            fprintf(ctx->output, "%s", row[col]);
-            first = 0;
+            if (cisv_writer_field_str(ctx->csv_writer, row[col]) < 0) return -1;
         }
     } else {
         for (size_t i = 0; i < field_count; i++) {
-            if (!first) fprintf(ctx->output, "%c", ctx->config->delimiter);
-            fprintf(ctx->output, "%s", row[i]);
-            first = 0;
+            if (cisv_writer_field_str(ctx->csv_writer, row[i]) < 0) return -1;
         }
     }
-    fprintf(ctx->output, "\n");
+    if (cisv_writer_row_end(ctx->csv_writer) < 0) return -1;
+    return 0;
 }
 
 static int prepare_header_state(cli_context *ctx, const char *const *row, size_t field_count) {
@@ -482,7 +650,10 @@ static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t 
         ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
     } else {
         if (row_matches_where(ctx, row, field_count)) {
-            output_row(ctx, row, field_count);
+            if (output_row(ctx, row, field_count) != 0) {
+                fprintf(stderr, "Failed writing output row\n");
+                return -1;
+            }
             ctx->row_count++;
         }
     }
@@ -525,7 +696,14 @@ static void print_help(const char *prog) {
     printf("  --jsonl                 Output JSON lines\n");
     printf("  --parallel              Parse file using multiple threads\n");
     printf("  --threads N             Number of worker threads (implies --parallel)\n");
+    printf("  --max-procs N           Cap CISV worker threads/cores\n");
+    printf("  --max-memory SIZE       Cap CISV parser memory budget\n");
     printf("  -b, --benchmark         Run benchmark mode\n");
+    printf("\nResource environment:\n");
+    printf("  CISV_MAX_PROCS or GOMAXPROCS      Max worker threads/cores\n");
+    printf("  CISV_MAX_MEMORY or GOMEMLIMIT     Parser memory budget\n");
+    printf("  CISV_MAX_ROW_SIZE                 Default max row size when --max-row is unset\n");
+    printf("  CISV_PARALLEL_MIN_BYTES           Minimum file size before auto parallelism\n");
     printf("\nExamples:\n");
     printf("  %s data.csv                    # Parse and display CSV\n", prog);
     printf("  %s -c data.csv                 # Count rows\n", prog);
@@ -687,12 +865,12 @@ static int stream_rows_with_iterator(const char *filename, cisv_config *config, 
     const size_t *lengths = NULL;
     size_t field_count = 0;
     int rc;
-    char *row_buf = NULL;
-    size_t row_buf_cap = 0;
-    char *out_buf = NULL;
-    size_t out_buf_cap = 0;
-    size_t out_buf_used = 0;
     size_t input_row_num = 0;
+
+    if (ensure_csv_writer(ctx) != 0) {
+        cisv_iterator_close(it);
+        return -1;
+    }
 
     while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
         if (ctx->no_header && input_row_num == 0) {
@@ -701,130 +879,32 @@ static int stream_rows_with_iterator(const char *filename, cisv_config *config, 
         }
         input_row_num++;
 
-        if (row_buf_cap == 0) {
-            row_buf_cap = 4096;
-            row_buf = malloc(row_buf_cap);
-            if (!row_buf) {
-                fprintf(stderr, "Failed to allocate row output buffer\n");
-                cisv_iterator_close(it);
-                return -1;
-            }
-
-            out_buf_cap = 1 << 20;  // 1 MiB batched output buffer
-            out_buf = malloc(out_buf_cap);
-            if (!out_buf) {
-                fprintf(stderr, "Failed to allocate output flush buffer\n");
-                free(row_buf);
-                cisv_iterator_close(it);
-                return -1;
-            }
-        }
-
-        size_t used = 0;
-#define ENSURE_ROW_BUF(extra) do { \
-    size_t need = used + (size_t)(extra); \
-    if (need > row_buf_cap) { \
-        size_t new_cap = row_buf_cap; \
-        while (new_cap < need) { \
-            if (new_cap > SIZE_MAX / 2) { \
-                new_cap = need; \
-                break; \
-            } \
-            new_cap *= 2; \
-        } \
-        char *new_buf = realloc(row_buf, new_cap); \
-        if (!new_buf) { \
-            fprintf(stderr, "Failed to grow row output buffer\n"); \
-            free(row_buf); \
-            cisv_iterator_close(it); \
-            return -1; \
-        } \
-        row_buf = new_buf; \
-        row_buf_cap = new_cap; \
-    } \
-} while (0)
-
-        int first = 1;
-
         if (ctx->select_cols && ctx->select_count > 0) {
             for (int sel = 0; sel < ctx->select_count; sel++) {
                 int col = ctx->select_cols[sel];
                 if (col < 0 || (size_t)col >= field_count) {
                     continue;
                 }
-                if (!first) {
-                    ENSURE_ROW_BUF(1);
-                    row_buf[used++] = config->delimiter;
+                if (cisv_writer_field(ctx->csv_writer, fields[col], lengths[col]) < 0) {
+                    cisv_iterator_close(it);
+                    return -1;
                 }
-                ENSURE_ROW_BUF(lengths[col]);
-                memcpy(row_buf + used, fields[col], lengths[col]);
-                used += lengths[col];
-                first = 0;
             }
         } else {
             for (size_t i = 0; i < field_count; i++) {
-                if (!first) {
-                    ENSURE_ROW_BUF(1);
-                    row_buf[used++] = config->delimiter;
-                }
-                ENSURE_ROW_BUF(lengths[i]);
-                memcpy(row_buf + used, fields[i], lengths[i]);
-                used += lengths[i];
-                first = 0;
-            }
-        }
-
-        ENSURE_ROW_BUF(1);
-        row_buf[used++] = '\n';
-        if (used >= out_buf_cap) {
-            if (out_buf_used > 0) {
-                if (fwrite(out_buf, 1, out_buf_used, ctx->output) != out_buf_used) {
-                    fprintf(stderr, "Failed writing buffered output\n");
-                    free(out_buf);
-                    free(row_buf);
+                if (cisv_writer_field(ctx->csv_writer, fields[i], lengths[i]) < 0) {
                     cisv_iterator_close(it);
                     return -1;
                 }
-                out_buf_used = 0;
             }
-            if (fwrite(row_buf, 1, used, ctx->output) != used) {
-                fprintf(stderr, "Failed writing row output\n");
-                free(out_buf);
-                free(row_buf);
-                cisv_iterator_close(it);
-                return -1;
-            }
-        } else {
-            if (out_buf_used + used > out_buf_cap) {
-                if (fwrite(out_buf, 1, out_buf_used, ctx->output) != out_buf_used) {
-                    fprintf(stderr, "Failed writing buffered output\n");
-                    free(out_buf);
-                    free(row_buf);
-                    cisv_iterator_close(it);
-                    return -1;
-                }
-                out_buf_used = 0;
-            }
-            memcpy(out_buf + out_buf_used, row_buf, used);
-            out_buf_used += used;
         }
-        ctx->row_count++;
-
-#undef ENSURE_ROW_BUF
-    }
-
-    if (out_buf_used > 0) {
-        if (fwrite(out_buf, 1, out_buf_used, ctx->output) != out_buf_used) {
-            fprintf(stderr, "Failed final buffered output flush\n");
-            free(out_buf);
-            free(row_buf);
+        if (cisv_writer_row_end(ctx->csv_writer) < 0) {
             cisv_iterator_close(it);
             return -1;
         }
+        ctx->row_count++;
     }
 
-    free(out_buf);
-    free(row_buf);
     cisv_iterator_close(it);
     if (rc == CISV_ITER_ERROR) {
         fprintf(stderr, "Parse error while iterating rows\n");
@@ -1152,6 +1232,11 @@ static void cleanup_cli_context(cli_context *ctx) {
 
     free(ctx->tail_field_counts);
 
+    if (ctx->csv_writer) {
+        cisv_writer_destroy(ctx->csv_writer);
+        ctx->csv_writer = NULL;
+    }
+
     if (ctx->output && ctx->output != stdout) {
         fclose(ctx->output);
     }
@@ -1195,6 +1280,8 @@ int main(int argc, char *argv[]) {
         {"jsonl", no_argument, 0, 14},
         {"parallel", no_argument, 0, 15},
         {"threads", required_argument, 0, 16},
+        {"max-procs", required_argument, 0, 17},
+        {"max-memory", required_argument, 0, 18},
         {"benchmark", no_argument, 0, 'b'},
         {0, 0, 0, 0}
     };
@@ -1236,47 +1323,31 @@ int main(int argc, char *argv[]) {
                 return 0;
 
             case 'd':
-                // SECURITY: Validate delimiter
-                if (optarg[0] == '\n' || optarg[0] == '\r') {
-                    fprintf(stderr, "Error: Delimiter cannot be a newline character\n");
+                if (parse_single_byte_option("Delimiter", optarg, &config.delimiter) != 0) {
                     cleanup_cli_context(&ctx);
                     return 1;
                 }
-                if (optarg[0] == '\0') {
-                    fprintf(stderr, "Error: Delimiter cannot be empty\n");
-                    cleanup_cli_context(&ctx);
-                    return 1;
-                }
-                config.delimiter = optarg[0];
                 break;
 
             case 'q':
-                // SECURITY: Validate quote character
-                if (optarg[0] == '\n' || optarg[0] == '\r') {
-                    fprintf(stderr, "Error: Quote character cannot be a newline character\n");
+                if (parse_single_byte_option("Quote character", optarg, &config.quote) != 0) {
                     cleanup_cli_context(&ctx);
                     return 1;
                 }
-                if (optarg[0] == '\0') {
-                    fprintf(stderr, "Error: Quote character cannot be empty\n");
-                    cleanup_cli_context(&ctx);
-                    return 1;
-                }
-                config.quote = optarg[0];
                 break;
 
             case 'e':
-                // SECURITY: Validate escape character
-                if (optarg[0] == '\n' || optarg[0] == '\r') {
-                    fprintf(stderr, "Error: Escape character cannot be a newline character\n");
+                if (parse_single_byte_option("Escape character", optarg, &config.escape) != 0) {
                     cleanup_cli_context(&ctx);
                     return 1;
                 }
-                config.escape = optarg[0];
                 break;
 
             case 'm':
-                config.comment = optarg[0];
+                if (parse_single_byte_option("Comment character", optarg, &config.comment) != 0) {
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
                 break;
 
             case 't':
@@ -1422,6 +1493,38 @@ int main(int argc, char *argv[]) {
                 parallel = 1;
                 break;
 
+            case 17: {
+                int max_procs;
+                if (safe_parse_int(optarg, &max_procs, 0) != 0 || max_procs <= 0) {
+                    fprintf(stderr, "Error: --max-procs must be a positive integer\n");
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
+                char value[32];
+                snprintf(value, sizeof(value), "%d", max_procs);
+                if (setenv("CISV_MAX_PROCS", value, 1) != 0) {
+                    perror("setenv");
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
+                break;
+            }
+
+            case 18: {
+                size_t parsed_size;
+                if (safe_parse_size(optarg, &parsed_size) != 0) {
+                    fprintf(stderr, "Error: --max-memory must be a positive byte size\n");
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
+                if (setenv("CISV_MAX_MEMORY", optarg, 1) != 0) {
+                    perror("setenv");
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
+                break;
+            }
+
             case 6: {
                 int head_val;
                 if (safe_parse_int(optarg, &head_val, 0) != 0) {
@@ -1482,6 +1585,12 @@ int main(int argc, char *argv[]) {
         cleanup_cli_context(&ctx);
         return 1;
     }
+    if (config.escape != '\0' && config.escape == config.quote) {
+        fprintf(stderr, "Error: Escape and quote character cannot be the same ('%c')\n",
+                config.escape);
+        cleanup_cli_context(&ctx);
+        return 1;
+    }
 
     if (optind < argc) {
         filename = argv[optind];
@@ -1524,6 +1633,15 @@ int main(int argc, char *argv[]) {
             if (count_rows_parallel(filename, &config, num_threads, &count) != 0) {
                 if (!ctx.quiet) {
                     fprintf(stderr, "Parallel count failed\n");
+                }
+                if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+                cleanup_cli_context(&ctx);
+                return 1;
+            }
+        } else if (count_needs_checked_path(&config)) {
+            if (count_rows_checked(filename, &config, ctx.quiet, &count) != 0) {
+                if (!ctx.quiet) {
+                    fprintf(stderr, "Count failed\n");
                 }
                 if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
                 cleanup_cli_context(&ctx);
@@ -1589,7 +1707,11 @@ int main(int argc, char *argv[]) {
             if (!ctx.tail_buffer[idx]) continue;
 
             if (row_matches_where(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx])) {
-                output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]);
+                if (output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]) != 0) {
+                    if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+                    cleanup_cli_context(&ctx);
+                    return 1;
+                }
                 ctx.row_count++;
             }
         }

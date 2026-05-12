@@ -159,6 +159,40 @@ test: $(CLI_BIN)
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --jsonl /tmp/test.csv > /tmp/test_jsonl.out
 	@grep -q '^{' /tmp/test_jsonl.out
 	@grep -q '"a":"1"' /tmp/test_jsonl.out
+	@printf '"a,b",c\n' > /tmp/test_quoted.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_quoted.csv > /tmp/test_quoted.out
+	@grep -q '^"a,b",c$$' /tmp/test_quoted.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_quoted.csv > /tmp/test_select_quoted.out
+	@grep -q '^"a,b"$$' /tmp/test_select_quoted.out
+	@printf '"a""b",c\n' > /tmp/test_escaped_quote.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_escaped_quote.csv > /tmp/test_escaped_quote.out
+	@grep -q '^"a""b",c$$' /tmp/test_escaped_quote.out
+	@printf '"line1\nline2",x\n' > /tmp/test_multiline.csv
+	@printf '"line1\nline2",x\n' > /tmp/test_multiline.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_multiline.csv > /tmp/test_multiline.out
+	@cmp -s /tmp/test_multiline.expected /tmp/test_multiline.out
+	@printf '#skip\n1,,3\n\n2,3,4\n' > /tmp/test_count_semantics.csv
+	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --skip-empty --comment '#' /tmp/test_count_semantics.csv)" = "2"
+	@printf '123456789,x\n' > /tmp/test_max_row.csv
+	@! env CISV_MAX_ROW_SIZE=8 LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test_max_row.csv >/tmp/test_max_row_fail.out 2>/tmp/test_max_row_fail.err
+	@test "$$(env CISV_MAX_ROW_SIZE=8 LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-row 64 --count /tmp/test_max_row.csv)" = "1"
+	@awk 'BEGIN { for (i = 0; i < 70000; i++) printf "x"; print ",y" }' > /tmp/test_gomemlimit.csv
+	@! env GOMEMLIMIT=1MiB LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test_gomemlimit.csv >/tmp/test_gomemlimit_fail.out 2>/tmp/test_gomemlimit_fail.err
+	@test "$$(env GOMEMLIMIT=1MiB LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-row 100000 --count /tmp/test_gomemlimit.csv)" = "1"
+	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-procs 1 --parallel --count /tmp/test.csv)" = "3"
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --delimiter "::" --count /tmp/test.csv >/tmp/test_bad_delimiter.out 2>/tmp/test_bad_delimiter.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --quote "qq" --count /tmp/test.csv >/tmp/test_bad_quote.out 2>/tmp/test_bad_quote.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --escape "ee" --count /tmp/test.csv >/tmp/test_bad_escape.out 2>/tmp/test_bad_escape.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --comment "##" --count /tmp/test.csv >/tmp/test_bad_comment.out 2>/tmp/test_bad_comment.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --escape '"' --count /tmp/test.csv >/tmp/test_bad_escape_quote.out 2>/tmp/test_bad_escape_quote.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-procs 0 --count /tmp/test.csv >/tmp/test_max_procs_fail.out 2>/tmp/test_max_procs_fail.err
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory nope --count /tmp/test.csv >/tmp/test_max_memory_fail.out 2>/tmp/test_max_memory_fail.err
 	@rm /tmp/test.csv
 	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_select_name.out /tmp/test_where.out /tmp/test_json.out /tmp/test_jsonl.out
+	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out
+	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_count_semantics.csv
+	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
+	@rm -f /tmp/test_bad_delimiter.out /tmp/test_bad_delimiter.err /tmp/test_bad_quote.out /tmp/test_bad_quote.err
+	@rm -f /tmp/test_bad_escape.out /tmp/test_bad_escape.err /tmp/test_bad_comment.out /tmp/test_bad_comment.err /tmp/test_bad_escape_quote.out /tmp/test_bad_escape_quote.err
+	@rm -f /tmp/test_max_procs_fail.out /tmp/test_max_procs_fail.err /tmp/test_max_memory_fail.out /tmp/test_max_memory_fail.err
 	@echo "CLI tests passed"

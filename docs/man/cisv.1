@@ -122,6 +122,12 @@ Use multi-threaded parsing.
 .B \-\-threads \fIN\fR
 Set worker thread count for parallel mode. Also enables \fB--parallel\fR.
 .TP
+.B \-\-max-procs \fIN\fR
+Cap CISV worker threads/cores for automatic parallel work. Overrides \fBCISV_MAX_PROCS\fR and \fBGOMAXPROCS\fR for this process.
+.TP
+.B \-\-max-memory \fISIZE\fR
+Set the CISV parser memory budget for this process. Accepts byte values and K/KB/KiB, M/MB/MiB, G/GB/GiB, or T/TB/TiB suffixes. Overrides \fBCISV_MAX_MEMORY\fR and \fBGOMEMLIMIT\fR for this process.
+.TP
 .B \-b, \-\-benchmark
 Run parser benchmark mode.
 .SH WHERE EXPRESSIONS
@@ -210,6 +216,24 @@ Generate one million rows:
 .TP
 .B CISV_STATS
 If set, print parser statistics to stderr after execution.
+.TP
+.B CISV_MAX_PROCS
+Maximum CISV worker threads/cores. Takes precedence over \fBGOMAXPROCS\fR.
+.TP
+.B GOMAXPROCS
+Go-compatible alias for the CISV worker thread/core cap when \fBCISV_MAX_PROCS\fR is unset.
+.TP
+.B CISV_MAX_MEMORY
+Process-local CISV parser memory budget. Takes precedence over \fBGOMEMLIMIT\fR.
+.TP
+.B GOMEMLIMIT
+Go-compatible alias for the CISV parser memory budget when \fBCISV_MAX_MEMORY\fR is unset.
+.TP
+.B CISV_MAX_ROW_SIZE
+Default maximum logical row size when \fB--max-row\fR or API config leaves it unset.
+.TP
+.B CISV_PARALLEL_MIN_BYTES
+Minimum file size before automatic parallel parsing can use more than one worker.
 .SH FILES
 .TP
 .B /usr/bin/cisv

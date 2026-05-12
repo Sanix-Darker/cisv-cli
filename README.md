@@ -86,9 +86,21 @@ Key options:
 - `--no-header`: skip first row in output
 - `--parallel`: use multi-threaded parsing
 - `--threads N`: set worker thread count for parallel mode
+- `--max-procs N`: cap CISV worker threads/cores for this process
+- `--max-memory SIZE`: cap parser memory budget for this process
+- `--max-row SIZE`: set the maximum logical row size
 - `--quiet`: suppress non-data stderr logs
 - `--strict`: explicit strict parse mode (default)
 - `--json`, `--jsonl`: machine-readable output
+
+Runtime resource controls:
+
+- `CISV_MAX_PROCS` or `GOMAXPROCS`: maximum CISV worker threads/cores
+- `CISV_MAX_MEMORY` or `GOMEMLIMIT`: parser memory budget
+- `CISV_MAX_ROW_SIZE`: default max row size when `--max-row` is unset
+- `CISV_PARALLEL_MIN_BYTES`: minimum file size before auto parallelism uses multiple workers
+
+Explicit CLI flags override environment defaults for the current process.
 
 ## EXAMPLES
 
@@ -102,6 +114,7 @@ cat examples/sample.csv | ./cli/build/cisv --no-header -
 ./cli/build/cisv --select-name a,c examples/sample.csv
 ./cli/build/cisv --where 'a==1' examples/sample.csv
 ./cli/build/cisv --parallel --threads 4 examples/sample.csv
+./cli/build/cisv --max-procs 1 --max-memory 512MiB -c examples/sample.csv
 ./cli/build/cisv --json examples/sample.csv
 ```
 
