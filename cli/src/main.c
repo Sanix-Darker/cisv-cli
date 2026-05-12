@@ -9,6 +9,9 @@
 #include <limits.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "cisv/parser.h"
 #include "cisv/writer.h"
@@ -212,6 +215,10 @@ typedef struct {
     int where_op; /* 0==,1!=,2>,3>=,4<,5<=,6contains */
     int where_value_is_number;
     double where_value_number;
+
+    char *csv_output_buffer;
+    size_t csv_output_buffer_pos;
+    size_t csv_output_buffer_size;
 
     cisv_config *config;
 } cli_context;
@@ -492,6 +499,306 @@ static int ensure_csv_writer(cli_context *ctx) {
         return -1;
     }
     return 0;
+}
+
+static int cli_csv_output_flush(cli_context *ctx) {
+    if (!ctx || !ctx->output || ctx->csv_output_buffer_pos == 0) return 0;
+    if (fwrite(ctx->csv_output_buffer, 1, ctx->csv_output_buffer_pos, ctx->output) != ctx->csv_output_buffer_pos) {
+        return -1;
+    }
+    ctx->csv_output_buffer_pos = 0;
+    return 0;
+}
+
+static int cli_csv_output_append(cli_context *ctx, const char *data, size_t len) {
+    if (!ctx || (!data && len > 0)) return -1;
+    if (len == 0) return 0;
+
+    if (!ctx->csv_output_buffer) {
+        ctx->csv_output_buffer_size = 1 << 20;
+        ctx->csv_output_buffer = malloc(ctx->csv_output_buffer_size);
+        if (!ctx->csv_output_buffer) return -1;
+    }
+
+    if (len > ctx->csv_output_buffer_size) {
+        if (cli_csv_output_flush(ctx) != 0) return -1;
+        return fwrite(data, 1, len, ctx->output) == len ? 0 : -1;
+    }
+
+    if (ctx->csv_output_buffer_pos + len > ctx->csv_output_buffer_size) {
+        if (cli_csv_output_flush(ctx) != 0) return -1;
+    }
+
+    memcpy(ctx->csv_output_buffer + ctx->csv_output_buffer_pos, data, len);
+    ctx->csv_output_buffer_pos += len;
+    return 0;
+}
+
+static int cli_csv_output_char(cli_context *ctx, char c) {
+    return cli_csv_output_append(ctx, &c, 1);
+}
+
+static int cli_csv_field_needs_quote(const char *data, size_t len, char delimiter, char quote) {
+    for (size_t i = 0; i < len; i++) {
+        char c = data[i];
+        if (c == delimiter || c == quote || c == '\r' || c == '\n') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int cli_csv_output_field(cli_context *ctx, const char *data, size_t len, int first_field) {
+    char delimiter = ctx->config ? ctx->config->delimiter : ',';
+    char quote = ctx->config ? ctx->config->quote : '"';
+
+    if (!first_field && cli_csv_output_char(ctx, delimiter) != 0) return -1;
+    if (!data) {
+        data = "";
+        len = 0;
+    }
+
+    if (!cli_csv_field_needs_quote(data, len, delimiter, quote)) {
+        return cli_csv_output_append(ctx, data, len);
+    }
+
+    if (cli_csv_output_char(ctx, quote) != 0) return -1;
+
+    const char *segment = data;
+    const char *end = data + len;
+    while (segment < end) {
+        const char *quote_pos = memchr(segment, quote, (size_t)(end - segment));
+        if (!quote_pos) {
+            if (cli_csv_output_append(ctx, segment, (size_t)(end - segment)) != 0) return -1;
+            break;
+        }
+        if (cli_csv_output_append(ctx, segment, (size_t)(quote_pos - segment)) != 0) return -1;
+        if (cli_csv_output_char(ctx, quote) != 0) return -1;
+        if (cli_csv_output_char(ctx, quote) != 0) return -1;
+        segment = quote_pos + 1;
+    }
+
+    return cli_csv_output_char(ctx, quote);
+}
+
+static int cli_csv_output_iterator_row(
+    cli_context *ctx,
+    const char **fields,
+    const size_t *lengths,
+    size_t field_count
+) {
+    int emitted = 0;
+
+    if (ctx->select_cols && ctx->select_count > 0) {
+        for (int sel = 0; sel < ctx->select_count; sel++) {
+            int col = ctx->select_cols[sel];
+            if (col < 0 || (size_t)col >= field_count) continue;
+            if (cli_csv_output_field(ctx, fields[col], lengths[col], !emitted) != 0) return -1;
+            emitted = 1;
+        }
+    } else {
+        for (size_t i = 0; i < field_count; i++) {
+            if (cli_csv_output_field(ctx, fields[i], lengths[i], !emitted) != 0) return -1;
+            emitted = 1;
+        }
+    }
+
+    return cli_csv_output_char(ctx, '\n');
+}
+
+static int cli_csv_selected_col(const cli_context *ctx, int col, int *select_pos) {
+    while (*select_pos < ctx->select_count && ctx->select_cols[*select_pos] < col) {
+        (*select_pos)++;
+    }
+    return *select_pos < ctx->select_count && ctx->select_cols[*select_pos] == col;
+}
+
+static int cli_csv_output_raw_or_quote(
+    cli_context *ctx,
+    const uint8_t *start,
+    const uint8_t *end,
+    int already_quoted,
+    int first_field
+) {
+    if (!already_quoted &&
+        (memchr(start, ctx->config->quote, (size_t)(end - start)) ||
+         memchr(start, '\r', (size_t)(end - start)))) {
+        return cli_csv_output_field(ctx, (const char *)start, (size_t)(end - start), first_field);
+    }
+
+    if (!first_field && cli_csv_output_char(ctx, ctx->config->delimiter) != 0) return -1;
+    return cli_csv_output_append(ctx, (const char *)start, (size_t)(end - start));
+}
+
+static int can_use_fast_select_projector(const cisv_config *config, const cli_context *ctx, int parallel) {
+    if (!config || !ctx || parallel) return 0;
+    if (ctx->select_count <= 0 || (ctx->select_names && ctx->select_name_count > 0)) return 0;
+    if (ctx->output_mode != 0 || ctx->where_enabled || ctx->head != 0 || ctx->tail != 0) return 0;
+    if (getenv("CISV_STATS") != NULL) return 0;
+
+    if (config->escape != '\0' || config->trim || config->skip_empty_lines ||
+        config->comment != '\0' || config->relaxed || config->skip_lines_with_error) {
+        return 0;
+    }
+    if (config->from_line > 1 || config->to_line > 0 || config->max_row_size > 0) return 0;
+    if (getenv("CISV_MAX_ROW_SIZE") || getenv("CISV_MAX_MEMORY") || getenv("GOMEMLIMIT")) return 0;
+
+    return 1;
+}
+
+static int project_select_file_fast(const char *filename, cisv_config *config, cli_context *ctx) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        perror("fstat");
+        close(fd);
+        return -1;
+    }
+
+    if (st.st_size == 0) {
+        close(fd);
+        return 0;
+    }
+
+    uint8_t *base = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) {
+        perror("mmap");
+        return -1;
+    }
+
+    const uint8_t *p = base;
+    const uint8_t *end = base + st.st_size;
+    const char delimiter = config->delimiter;
+    const char quote = config->quote;
+    size_t input_row_num = 0;
+    int result = 0;
+
+    while (p < end) {
+        int col = 0;
+        int select_pos = 0;
+        int emitted = 0;
+
+        for (;;) {
+            const uint8_t *field_start = p;
+            const uint8_t *field_end = p;
+            int already_quoted = 0;
+
+            if (p < end && *p == (uint8_t)quote) {
+                already_quoted = 1;
+                p++;
+                while (p < end) {
+                    if (*p == (uint8_t)quote) {
+                        if (p + 1 < end && p[1] == (uint8_t)quote) {
+                            p += 2;
+                            continue;
+                        }
+                        p++;
+                        field_end = p;
+                        while (p < end && (*p == ' ' || *p == '\t')) p++;
+                        break;
+                    }
+                    p++;
+                }
+                if (field_end == field_start) {
+                    fprintf(stderr, "Parse error: unterminated quoted field\n");
+                    result = -1;
+                    goto done;
+                }
+                if (p < end && *p != (uint8_t)delimiter && *p != '\n' &&
+                    !(*p == '\r' && p + 1 < end && p[1] == '\n')) {
+                    fprintf(stderr, "Parse error: unexpected character after closing quote\n");
+                    result = -1;
+                    goto done;
+                }
+            } else {
+                while (p < end && *p != (uint8_t)delimiter && *p != '\n') {
+                    p++;
+                }
+                field_end = p;
+                if (field_end > field_start && *(field_end - 1) == '\r') {
+                    field_end--;
+                }
+            }
+
+            if (cli_csv_selected_col(ctx, col, &select_pos)) {
+                if (!(ctx->no_header && input_row_num == 0)) {
+                    if (cli_csv_output_raw_or_quote(ctx, field_start, field_end, already_quoted, !emitted) != 0) {
+                        result = -1;
+                        goto done;
+                    }
+                    emitted = 1;
+                }
+            }
+
+            if (p >= end) {
+                if (!(ctx->no_header && input_row_num == 0)) {
+                    if (cli_csv_output_char(ctx, '\n') != 0) {
+                        result = -1;
+                        goto done;
+                    }
+                    ctx->row_count++;
+                }
+                input_row_num++;
+                break;
+            }
+
+            if (*p == (uint8_t)delimiter) {
+                p++;
+                col++;
+                if (p >= end) {
+                    if (cli_csv_selected_col(ctx, col, &select_pos) &&
+                        !(ctx->no_header && input_row_num == 0)) {
+                        if (cli_csv_output_field(ctx, "", 0, !emitted) != 0) {
+                            result = -1;
+                            goto done;
+                        }
+                    }
+                    if (!(ctx->no_header && input_row_num == 0)) {
+                        if (cli_csv_output_char(ctx, '\n') != 0) {
+                            result = -1;
+                            goto done;
+                        }
+                        ctx->row_count++;
+                    }
+                    input_row_num++;
+                    break;
+                }
+                continue;
+            }
+
+            if (*p == '\r' && p + 1 < end && p[1] == '\n') {
+                p += 2;
+            } else if (*p == '\n') {
+                p++;
+            } else if (*p == '\r') {
+                fprintf(stderr, "Parse error: unexpected carriage return after closing quote\n");
+                result = -1;
+                goto done;
+            }
+
+            if (!(ctx->no_header && input_row_num == 0)) {
+                if (cli_csv_output_char(ctx, '\n') != 0) {
+                    result = -1;
+                    goto done;
+                }
+                ctx->row_count++;
+            }
+            input_row_num++;
+            break;
+        }
+    }
+
+    if (cli_csv_output_flush(ctx) != 0) result = -1;
+
+done:
+    munmap(base, (size_t)st.st_size);
+    return result;
 }
 
 static int output_row(cli_context *ctx, const char *const *row, size_t field_count) {
@@ -867,11 +1174,6 @@ static int stream_rows_with_iterator(const char *filename, cisv_config *config, 
     int rc;
     size_t input_row_num = 0;
 
-    if (ensure_csv_writer(ctx) != 0) {
-        cisv_iterator_close(it);
-        return -1;
-    }
-
     while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
         if (ctx->no_header && input_row_num == 0) {
             input_row_num++;
@@ -879,30 +1181,16 @@ static int stream_rows_with_iterator(const char *filename, cisv_config *config, 
         }
         input_row_num++;
 
-        if (ctx->select_cols && ctx->select_count > 0) {
-            for (int sel = 0; sel < ctx->select_count; sel++) {
-                int col = ctx->select_cols[sel];
-                if (col < 0 || (size_t)col >= field_count) {
-                    continue;
-                }
-                if (cisv_writer_field(ctx->csv_writer, fields[col], lengths[col]) < 0) {
-                    cisv_iterator_close(it);
-                    return -1;
-                }
-            }
-        } else {
-            for (size_t i = 0; i < field_count; i++) {
-                if (cisv_writer_field(ctx->csv_writer, fields[i], lengths[i]) < 0) {
-                    cisv_iterator_close(it);
-                    return -1;
-                }
-            }
-        }
-        if (cisv_writer_row_end(ctx->csv_writer) < 0) {
+        if (cli_csv_output_iterator_row(ctx, fields, lengths, field_count) != 0) {
             cisv_iterator_close(it);
             return -1;
         }
         ctx->row_count++;
+    }
+
+    if (cli_csv_output_flush(ctx) != 0) {
+        cisv_iterator_close(it);
+        return -1;
     }
 
     cisv_iterator_close(it);
@@ -1231,6 +1519,7 @@ static void cleanup_cli_context(cli_context *ctx) {
     }
 
     free(ctx->tail_field_counts);
+    free(ctx->csv_output_buffer);
 
     if (ctx->csv_writer) {
         cisv_writer_destroy(ctx->csv_writer);
@@ -1668,6 +1957,18 @@ int main(int argc, char *argv[]) {
         }
     }
     setvbuf(ctx.output, NULL, _IOFBF, 1 << 20);
+
+    if (can_use_fast_select_projector(&config, &ctx, parallel)) {
+        int project_result = project_select_file_fast(filename, &config, &ctx);
+        if (project_result < 0) {
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+            cleanup_cli_context(&ctx);
+            return 1;
+        }
+        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+        cleanup_cli_context(&ctx);
+        return 0;
+    }
 
     // Fast path: iterator avoids per-field allocations for common full-stream output.
     if (!parallel && ctx.head == 0 && ctx.tail == 0 && getenv("CISV_STATS") == NULL &&

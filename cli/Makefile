@@ -172,10 +172,20 @@ test: $(CLI_BIN)
 	@printf '"a""b",c\n' > /tmp/test_escaped_quote.csv
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_escaped_quote.csv > /tmp/test_escaped_quote.out
 	@grep -q '^"a""b",c$$' /tmp/test_escaped_quote.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_escaped_quote.csv > /tmp/test_select_escaped_quote.out
+	@grep -q '^"a""b"$$' /tmp/test_select_escaped_quote.out
+	@printf 'a"b,c\n' > /tmp/test_unquoted_quote.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_unquoted_quote.csv > /tmp/test_select_unquoted_quote.out
+	@grep -q '^"a""b"$$' /tmp/test_select_unquoted_quote.out
+	@printf '"a"x,b\n' > /tmp/test_bad_select_quote.csv
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_bad_select_quote.csv >/tmp/test_bad_select_quote.out 2>/tmp/test_bad_select_quote.err
 	@printf '"line1\nline2",x\n' > /tmp/test_multiline.csv
 	@printf '"line1\nline2",x\n' > /tmp/test_multiline.expected
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_multiline.csv > /tmp/test_multiline.out
 	@cmp -s /tmp/test_multiline.expected /tmp/test_multiline.out
+	@printf '"line1\nline2"\n' > /tmp/test_select_multiline.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_multiline.csv > /tmp/test_select_multiline.out
+	@cmp -s /tmp/test_select_multiline.expected /tmp/test_select_multiline.out
 	@printf '#skip\n1,,3\n\n2,3,4\n' > /tmp/test_count_semantics.csv
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --skip-empty --comment '#' /tmp/test_count_semantics.csv)" = "2"
 	@printf '123456789,x\n' > /tmp/test_max_row.csv
@@ -194,8 +204,9 @@ test: $(CLI_BIN)
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory nope --count /tmp/test.csv >/tmp/test_max_memory_fail.out 2>/tmp/test_max_memory_fail.err
 	@rm /tmp/test.csv
 	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_select_name.out /tmp/test_where.out /tmp/test_json.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_where_contains.out
-	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out
-	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_count_semantics.csv
+	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
+	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err
+	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_count_semantics.csv
 	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
 	@rm -f /tmp/test_bad_delimiter.out /tmp/test_bad_delimiter.err /tmp/test_bad_quote.out /tmp/test_bad_quote.err
 	@rm -f /tmp/test_bad_escape.out /tmp/test_bad_escape.err /tmp/test_bad_comment.out /tmp/test_bad_comment.err /tmp/test_bad_escape_quote.out /tmp/test_bad_escape_quote.err
