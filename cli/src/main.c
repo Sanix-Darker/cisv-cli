@@ -1525,6 +1525,74 @@ static int materialize_stdin_to_temp(char *out_path, size_t out_path_len) {
     return 0;
 }
 
+static int open_atomic_output_file(const char *output_file, char *tmp_path, size_t tmp_path_len, FILE **out) {
+    if (!output_file || !tmp_path || tmp_path_len == 0 || !out) {
+        return -1;
+    }
+
+    char tmpl[PATH_MAX];
+    int n = snprintf(tmpl, sizeof(tmpl), "%s.tmp.XXXXXX", output_file);
+    if (n < 0 || n >= (int)sizeof(tmpl) || (size_t)n >= tmp_path_len) {
+        fprintf(stderr, "Error: Output path is too long\n");
+        return -1;
+    }
+
+    int fd = mkstemp(tmpl);
+    if (fd < 0) {
+        perror("mkstemp");
+        return -1;
+    }
+
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        perror("fdopen");
+        close(fd);
+        unlink(tmpl);
+        return -1;
+    }
+
+    memcpy(tmp_path, tmpl, (size_t)n + 1);
+    *out = f;
+    return 0;
+}
+
+static int finalize_atomic_output_file(cli_context *ctx,
+                                       const char *tmp_path,
+                                       const char *output_file,
+                                       int success,
+                                       int quiet) {
+    int close_failed = 0;
+
+    if (ctx && ctx->csv_writer) {
+        cisv_writer_destroy(ctx->csv_writer);
+        ctx->csv_writer = NULL;
+    }
+
+    if (ctx && ctx->output && ctx->output != stdout) {
+        if (fclose(ctx->output) != 0) {
+            close_failed = 1;
+            if (!quiet) perror("fclose");
+        }
+        ctx->output = NULL;
+    }
+
+    if (!output_file || !tmp_path || tmp_path[0] == '\0') {
+        return close_failed ? -1 : 0;
+    }
+
+    if (success && !close_failed) {
+        if (rename(tmp_path, output_file) != 0) {
+            if (!quiet) perror("rename");
+            unlink(tmp_path);
+            return -1;
+        }
+        return 0;
+    }
+
+    unlink(tmp_path);
+    return close_failed ? -1 : 0;
+}
+
 static void cleanup_cli_context(cli_context *ctx) {
     if (!ctx) {
         return;
@@ -1577,6 +1645,27 @@ static void cleanup_cli_context(cli_context *ctx) {
     if (ctx->output && ctx->output != stdout) {
         fclose(ctx->output);
     }
+}
+
+static int finish_cli(cli_context *ctx,
+                      const char *stdin_tmp_path,
+                      const char *output_tmp_path,
+                      const char *output_file,
+                      int success) {
+    int finalize_rc = finalize_atomic_output_file(
+        ctx,
+        output_tmp_path,
+        output_file,
+        success,
+        ctx ? ctx->quiet : 0
+    );
+
+    if (stdin_tmp_path && stdin_tmp_path[0]) {
+        unlink(stdin_tmp_path);
+    }
+
+    cleanup_cli_context(ctx);
+    return (success && finalize_rc == 0) ? 0 : 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -1645,6 +1734,7 @@ int main(int argc, char *argv[]) {
     int parallel = 0;
     int num_threads = 0;
     char stdin_tmp_path[PATH_MAX] = {0};
+    char output_tmp_path[PATH_MAX] = {0};
 
     while ((opt = getopt_long(argc, argv, "hvd:q:e:m:trs:co:b", long_options, &option_index)) != -1) {
         switch (opt) {
@@ -1995,11 +2085,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (output_file) {
-        ctx.output = fopen(output_file, "w");
-        if (!ctx.output) {
-            if (!ctx.quiet) {
-                perror("fopen");
-            }
+        if (open_atomic_output_file(output_file, output_tmp_path, sizeof(output_tmp_path), &ctx.output) != 0) {
             if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
             cleanup_cli_context(&ctx);
             return 1;
@@ -2010,13 +2096,9 @@ int main(int argc, char *argv[]) {
     if (can_use_fast_select_projector(&config, &ctx, parallel)) {
         int project_result = project_select_file_fast(filename, &config, &ctx);
         if (project_result < 0) {
-            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            cleanup_cli_context(&ctx);
-            return 1;
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
-        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        cleanup_cli_context(&ctx);
-        return 0;
+        return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
     }
 
     // Fast path: iterator avoids per-field allocations for common full-stream output.
@@ -2025,28 +2107,20 @@ int main(int argc, char *argv[]) {
         !(ctx.select_names && ctx.select_name_count > 0)) {
         int iter_result = stream_rows_with_iterator(filename, &config, &ctx);
         if (iter_result < 0) {
-            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            cleanup_cli_context(&ctx);
-            return 1;
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
-        if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-        cleanup_cli_context(&ctx);
-        return 0;
+        return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
     }
 
     if (parallel) {
         int parallel_result = parse_file_parallel_cli(filename, &config, &ctx, num_threads);
         if (parallel_result < 0) {
-            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            cleanup_cli_context(&ctx);
-            return 1;
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
     } else {
         int iter_result = parse_file_with_iterator_cli(filename, &config, &ctx);
         if (iter_result < 0) {
-            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-            cleanup_cli_context(&ctx);
-            return 1;
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
     }
 
@@ -2060,9 +2134,7 @@ int main(int argc, char *argv[]) {
                            (const char *const *)ctx.tail_buffer[idx],
                            ctx.tail_field_lengths[idx],
                            ctx.tail_field_counts[idx]) != 0) {
-                if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-                cleanup_cli_context(&ctx);
-                return 1;
+                return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
             }
             ctx.row_count++;
         }
@@ -2074,8 +2146,5 @@ int main(int argc, char *argv[]) {
             fputs("]\n", ctx.output);
         }
     }
-    if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-    cleanup_cli_context(&ctx);
-
-    return 0;
+    return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
 }
