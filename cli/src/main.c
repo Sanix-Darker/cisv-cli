@@ -924,14 +924,13 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                     result = -1;
                     goto done;
                 }
-                if (p < end && *p != (uint8_t)delimiter && *p != '\n' &&
-                    !(*p == '\r' && p + 1 < end && p[1] == '\n')) {
+                if (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
                     fprintf(stderr, "Parse error: unexpected character after closing quote\n");
                     result = -1;
                     goto done;
                 }
             } else {
-                while (p < end && *p != (uint8_t)delimiter && *p != '\n') {
+                while (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
                     if (*p == (uint8_t)quote) {
                         fprintf(stderr, "Parse error: quote inside unquoted field\n");
                         result = -1;
@@ -991,14 +990,13 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                 continue;
             }
 
-            if (*p == '\r' && p + 1 < end && p[1] == '\n') {
-                p += 2;
+            if (*p == '\r') {
+                p++;
+                if (p < end && *p == '\n') {
+                    p++;
+                }
             } else if (*p == '\n') {
                 p++;
-            } else if (*p == '\r') {
-                fprintf(stderr, "Parse error: unexpected carriage return after closing quote\n");
-                result = -1;
-                goto done;
             }
 
             if (!(ctx->no_header && input_row_num == 0)) {
