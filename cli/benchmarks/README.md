@@ -60,6 +60,9 @@ docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --fast
 
 # More iterations
 docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --iterations=10
+
+# Skip extra generated count fixtures when you only need the simple CSV suite
+docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --no-count-variants
 ```
 
 ### Command-line options
@@ -70,7 +73,13 @@ docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --iterations=1
 | `--cols=N` | 7 | Number of columns |
 | `--iterations=N` | 5 | Benchmark iterations |
 | `--file=PATH` | - | Use existing CSV file |
+| `--no-count-variants` | - | Skip quoted, commented, and skip-empty count fixtures |
+| `--slice-rows=N` | 100 | Rows to emit in head/tail/slice benchmarks |
+| `--slice-start=N` | 1000 | 1-based line start for cisv range slicing |
 | `--fast` | - | Skip slow/medium tools |
+
+The default generated run benchmarks simple count/select/slicing plus focused count
+fixtures for quoted multiline rows, comment skipping, and skip-empty semantics.
 
 ## Tool Categories
 

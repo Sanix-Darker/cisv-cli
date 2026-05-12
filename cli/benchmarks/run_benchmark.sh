@@ -26,6 +26,10 @@
 #   --cols=N        Number of columns (default: 7)
 #   --iterations=N  Benchmark iterations (default: 5)
 #   --file=PATH     Use existing CSV file instead of generating
+#   --no-count-variants
+#                  Skip generated quoted/comment/skip-empty count fixtures
+#   --slice-rows=N  Rows to emit in head/tail/slice benchmarks (default: 100)
+#   --slice-start=N 1-based line start for cisv range slicing (default: 1000)
 #   --fast          Skip slow tools (csvkit) and medium tools (miller, datamash, goawk)
 #   --help          Show this help
 #
@@ -41,6 +45,9 @@ ROWS=1000000
 COLS=7
 FAST_MODE=false
 INPUT_FILE=""
+COUNT_VARIANTS=true
+SLICE_ROWS=100
+SLICE_START=1000
 
 # Temp file for results
 RESULTS_FILE=""
@@ -114,6 +121,64 @@ PYEOF
     echo "  Done in ${elapsed}s, file size: ${size_mb} MB"
 }
 
+generate_count_variant_csv() {
+    local variant=$1
+    local rows=$2
+    local cols=$3
+    local filename=$4
+
+    echo "Generating count fixture (${variant}): $(format_number $rows) rows × ${cols} columns..."
+
+    python3 << PYEOF
+import sys
+
+variant = '$variant'
+rows = $rows
+cols = $cols
+filename = '$filename'
+
+def data_row(i):
+    return ','.join('value_' + str(i) + '_' + str(j) for j in range(cols)) + '\n'
+
+with open(filename, 'w') as f:
+    f.write(','.join('col' + str(i) for i in range(cols)) + '\n')
+
+    if variant == 'quoted':
+        for i in range(rows):
+            fields = []
+            for j in range(cols):
+                if j == 1:
+                    fields.append('"quoted,' + str(i) + ',' + str(j) + '"')
+                elif j == 2:
+                    fields.append('"line ' + str(i) + ' part A\nline ' + str(i) + ' part B"')
+                else:
+                    fields.append('value_' + str(i) + '_' + str(j))
+            f.write(','.join(fields) + '\n')
+            if i > 0 and i % 500000 == 0:
+                print(f"  Generated {i:,} rows...", file=sys.stderr)
+    elif variant == 'commented':
+        for i in range(rows):
+            if i % 10 == 0:
+                f.write('#comment_' + str(i) + ',ignored\n')
+            f.write(data_row(i))
+            if i > 0 and i % 500000 == 0:
+                print(f"  Generated {i:,} rows...", file=sys.stderr)
+    elif variant == 'skip-empty':
+        for i in range(rows):
+            if i % 10 == 0:
+                f.write('\n')
+            f.write(data_row(i))
+            if i > 0 and i % 500000 == 0:
+                print(f"  Generated {i:,} rows...", file=sys.stderr)
+    else:
+        raise SystemExit('unknown count fixture: ' + variant)
+PYEOF
+
+    local size=$(get_file_size "$filename")
+    local size_mb=$(awk "BEGIN {printf \"%.1f\", $size / 1048576}")
+    echo "  Fixture size: ${size_mb} MB"
+}
+
 # ============================================================================
 # BENCHMARK FUNCTION
 # ============================================================================
@@ -139,7 +204,7 @@ run_benchmark() {
             # Only infer row count from command output in "count" benchmarks.
             # For "select", tools output CSV text and numeric-only extraction can
             # mis-detect values from payload lines.
-            if [ "$category" = "count" ]; then
+            if [[ "$category" == count* ]]; then
                 local trimmed
                 trimmed=$(echo "$output" | tr -d '[:space:]')
                 if [[ "$trimmed" =~ ^[0-9]+$ ]]; then
@@ -203,6 +268,41 @@ print_results_table() {
     done
 }
 
+run_count_variant_benchmarks() {
+    local variant="$1"
+    local filepath="$2"
+    local cisv_options="$3"
+    local xan_comparable="$4"
+    local file_size
+    file_size=$(get_file_size "$filepath")
+
+    echo ""
+    echo "--- Row Counting Benchmarks (${variant}) ---"
+    echo ""
+
+    local category="count-${variant}"
+    if [ -n "$CISV_BIN" ]; then
+        run_benchmark "cisv" "$CISV_BIN -c ${cisv_options} \"$filepath\"" "$category"
+    else
+        echo "Benchmarking cisv..."
+        echo "  Skipped: cisv not available"
+    fi
+
+    if [ "$xan_comparable" = "true" ]; then
+        if command_exists xan; then
+            run_benchmark "xan" "xan count -n \"$filepath\"" "$category"
+        else
+            echo "Benchmarking xan..."
+            echo "  Skipped: xan not installed"
+        fi
+    else
+        echo "Benchmarking xan..."
+        echo "  Skipped: no equivalent xan options for this CISV semantic fixture"
+    fi
+
+    print_results_table "$category" "$file_size" "$ROWS"
+}
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -218,6 +318,10 @@ Options:
     --cols=N        Number of columns (default: 7)
     --iterations=N  Benchmark iterations (default: 5)
     --file=PATH     Use existing CSV file instead of generating
+    --no-count-variants
+                    Skip generated quoted/comment/skip-empty count fixtures
+    --slice-rows=N  Rows to emit in head/tail/slice benchmarks (default: 100)
+    --slice-start=N 1-based line start for cisv range slicing (default: 1000)
     --fast          Skip slow tools (csvkit) and medium tools (miller, datamash, goawk)
     --help          Show this help
 
@@ -242,6 +346,9 @@ main() {
             --cols=*) COLS="${1#*=}"; shift ;;
             --iterations=*) ITERATIONS="${1#*=}"; shift ;;
             --file=*) INPUT_FILE="${1#*=}"; shift ;;
+            --no-count-variants) COUNT_VARIANTS=false; shift ;;
+            --slice-rows=*) SLICE_ROWS="${1#*=}"; shift ;;
+            --slice-start=*) SLICE_START="${1#*=}"; shift ;;
             --fast) FAST_MODE=true; shift ;;
             --help|-h) show_help; exit 0 ;;
             *) shift ;;
@@ -285,6 +392,9 @@ main() {
     echo "File size: ${size_mb} MB"
     echo "Iterations: $ITERATIONS"
     echo "Fast mode: $FAST_MODE"
+    echo "Count variants: $COUNT_VARIANTS"
+    echo "Slice rows: $SLICE_ROWS"
+    echo "Slice start: $SLICE_START"
     echo "CPU cores: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
     echo "Resource env: GOMAXPROCS=${GOMAXPROCS:-unset} GOMEMLIMIT=${GOMEMLIMIT:-unset} CISV_MAX_PROCS=${CISV_MAX_PROCS:-unset} CISV_MAX_MEMORY=${CISV_MAX_MEMORY:-unset} CISV_MAX_ROW_SIZE=${CISV_MAX_ROW_SIZE:-unset}"
     echo "============================================================"
@@ -332,7 +442,7 @@ main() {
 
     # xan count
     if command_exists xan; then
-        run_benchmark "xan" "xan count \"$filepath\"" "count"
+        run_benchmark "xan" "xan count -n \"$filepath\"" "count"
     else
         echo "Benchmarking xan..."
         echo "  Skipped: xan not installed"
@@ -427,6 +537,30 @@ main() {
     # Print row counting results
     print_results_table "count" "$file_size" "$row_count"
 
+    if [ -n "$INPUT_FILE" ] && [ "$COUNT_VARIANTS" = "true" ]; then
+        echo ""
+        echo "Skipping generated count variants because --file was provided"
+    fi
+
+    local count_variant_files=()
+    if [ -z "$INPUT_FILE" ] && [ "$COUNT_VARIANTS" = "true" ]; then
+        local quoted_path="/tmp/cisv_benchmark_quoted_$$.csv"
+        local commented_path="/tmp/cisv_benchmark_commented_$$.csv"
+        local skip_empty_path="/tmp/cisv_benchmark_skip_empty_$$.csv"
+
+        generate_count_variant_csv "quoted" "$ROWS" "$COLS" "$quoted_path"
+        count_variant_files+=("$quoted_path")
+        run_count_variant_benchmarks "quoted" "$quoted_path" "" "true"
+
+        generate_count_variant_csv "commented" "$ROWS" "$COLS" "$commented_path"
+        count_variant_files+=("$commented_path")
+        run_count_variant_benchmarks "commented" "$commented_path" "--comment '#'" "false"
+
+        generate_count_variant_csv "skip-empty" "$ROWS" "$COLS" "$skip_empty_path"
+        count_variant_files+=("$skip_empty_path")
+        run_count_variant_benchmarks "skip-empty" "$skip_empty_path" "--skip-empty" "false"
+    fi
+
     # ========================================================================
     # COLUMN SELECTION BENCHMARKS
     # ========================================================================
@@ -504,11 +638,52 @@ main() {
     # Print column selection results
     print_results_table "select" "$file_size" "$row_count"
 
+    # ========================================================================
+    # ROW SLICING BENCHMARKS
+    # ========================================================================
+
+    echo ""
+    echo "--- Row Slicing Benchmarks ---"
+    echo ""
+
+    local slice_end=$((SLICE_START + SLICE_ROWS - 1))
+    local xan_slice_start=$((SLICE_START - 1))
+    if [ "$xan_slice_start" -lt 0 ]; then
+        xan_slice_start=0
+    fi
+
+    if [ -n "$CISV_BIN" ]; then
+        run_benchmark "cisv-head" "$CISV_BIN --head $SLICE_ROWS \"$filepath\" | wc -l" "head"
+        run_benchmark "cisv-tail" "$CISV_BIN --tail $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+        run_benchmark "cisv-range" "$CISV_BIN --from-line $SLICE_START --to-line $slice_end \"$filepath\" | wc -l" "slice"
+    fi
+
+    if command_exists xan; then
+        run_benchmark "xan-head" "xan head -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
+        run_benchmark "xan-slice-head" "xan slice -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
+        run_benchmark "xan-tail" "xan tail -l $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+        run_benchmark "xan-slice-tail" "xan slice -L $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+        run_benchmark "xan-slice" "xan slice -s $xan_slice_start -l $SLICE_ROWS \"$filepath\" | wc -l" "slice"
+    else
+        echo "Benchmarking xan row slicing..."
+        echo "  Skipped: xan not installed"
+    fi
+
+    run_benchmark "unix-head" "head -n $SLICE_ROWS \"$filepath\" | wc -l" "head"
+    run_benchmark "unix-tail" "tail -n $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+
+    print_results_table "head" "$file_size" "$SLICE_ROWS"
+    print_results_table "tail" "$file_size" "$SLICE_ROWS"
+    print_results_table "slice" "$file_size" "$SLICE_ROWS"
+
     # Cleanup
     if [ -z "$INPUT_FILE" ]; then
         rm -f "$filepath"
+        for count_variant_file in "${count_variant_files[@]}"; do
+            rm -f "$count_variant_file"
+        done
         echo ""
-        echo "Cleaned up temporary file"
+        echo "Cleaned up temporary files"
     fi
 
     echo ""
