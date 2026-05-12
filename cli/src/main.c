@@ -1225,7 +1225,10 @@ static int count_rows_parallel(const char *filename, cisv_config *config, int nu
     }
 
     for (int i = 0; i < result_count; i++) {
-        if (!results[i]) continue;
+        if (!results[i]) {
+            cisv_results_free(results, result_count);
+            return -1;
+        }
         if (results[i]->error_code != 0) {
             cisv_results_free(results, result_count);
             return -1;
@@ -1292,7 +1295,13 @@ static int parse_file_parallel_cli(const char *filename, cisv_config *config, cl
 
     for (int chunk = 0; chunk < result_count; chunk++) {
         cisv_result_t *result = results[chunk];
-        if (!result) continue;
+        if (!result) {
+            if (!ctx->quiet) {
+                fprintf(stderr, "Parse error: missing parallel chunk result\n");
+            }
+            cisv_results_free(results, result_count);
+            return -1;
+        }
         if (result->error_code != 0) {
             if (!ctx->quiet) {
                 fprintf(stderr, "Parse error: %s\n", result->error_message);
