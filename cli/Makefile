@@ -156,9 +156,14 @@ test: $(CLI_BIN)
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --json /tmp/test.csv > /tmp/test_json.out
 	@test "$$(head -c 1 /tmp/test_json.out)" = "["
 	@grep -q '"a":"1"' /tmp/test_json.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --json --no-header /tmp/test.csv > /tmp/test_json_no_header.out
+	@grep -q '^\[\["1","2","3"\]' /tmp/test_json_no_header.out
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --jsonl /tmp/test.csv > /tmp/test_jsonl.out
 	@grep -q '^{' /tmp/test_jsonl.out
 	@grep -q '"a":"1"' /tmp/test_jsonl.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --where 'b~5' /tmp/test.csv > /tmp/test_where_contains.out
+	@grep -q '^4,5,6$$' /tmp/test_where_contains.out
+	@! grep -q '^1,2,3$$' /tmp/test_where_contains.out
 	@printf '"a,b",c\n' > /tmp/test_quoted.csv
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_quoted.csv > /tmp/test_quoted.out
 	@grep -q '^"a,b",c$$' /tmp/test_quoted.out
@@ -188,7 +193,7 @@ test: $(CLI_BIN)
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-procs 0 --count /tmp/test.csv >/tmp/test_max_procs_fail.out 2>/tmp/test_max_procs_fail.err
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory nope --count /tmp/test.csv >/tmp/test_max_memory_fail.out 2>/tmp/test_max_memory_fail.err
 	@rm /tmp/test.csv
-	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_select_name.out /tmp/test_where.out /tmp/test_json.out /tmp/test_jsonl.out
+	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_select_name.out /tmp/test_where.out /tmp/test_json.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_where_contains.out
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out
 	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_count_semantics.csv
 	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
