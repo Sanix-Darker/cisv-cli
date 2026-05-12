@@ -147,6 +147,11 @@ test: $(CLI_BIN)
 	@cat /tmp/test.csv | env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --no-header - > /tmp/test_stdin_no_header.out
 	@grep -q '^1,2,3$$' /tmp/test_stdin_no_header.out
 	@! grep -q '^a,b,c$$' /tmp/test_stdin_no_header.out
+	@mkdir -p /tmp/test_cisv_stdin_tmp
+	@printf 'a,b\n1,2\n' | env TMPDIR=/tmp/test_cisv_stdin_tmp LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) - >/tmp/test_stdin_tmp_success.out
+	@test -z "$$(ls -A /tmp/test_cisv_stdin_tmp)"
+	@! printf '12345,x\n' | env TMPDIR=/tmp/test_cisv_stdin_tmp LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-row 4 - >/tmp/test_stdin_tmp_fail.out 2>/tmp/test_stdin_tmp_fail.err
+	@test -z "$$(ls -A /tmp/test_cisv_stdin_tmp)"
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select-name a,c /tmp/test.csv > /tmp/test_select_name.out
 	@grep -q '^a,c$$' /tmp/test_select_name.out
 	@grep -q '^1,3$$' /tmp/test_select_name.out
@@ -236,7 +241,8 @@ test: $(CLI_BIN)
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-procs 0 --count /tmp/test.csv >/tmp/test_max_procs_fail.out 2>/tmp/test_max_procs_fail.err
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory nope --count /tmp/test.csv >/tmp/test_max_memory_fail.out 2>/tmp/test_max_memory_fail.err
 	@rm /tmp/test.csv
-	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_select_name.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
+	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
+	@rmdir /tmp/test_cisv_stdin_tmp
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err
 	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_count_semantics.csv
