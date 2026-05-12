@@ -237,6 +237,12 @@ typedef struct {
     int quiet;
 } cli_count_context;
 
+static int prepare_header_state(cli_context *ctx,
+                                const char *const *row,
+                                const size_t *lengths,
+                                size_t field_count);
+static int row_matches_where(cli_context *ctx, const char *const *row, size_t field_count);
+
 static void cli_count_row_cb(void *user) {
     cli_count_context *ctx = (cli_count_context *)user;
     ctx->rows++;
@@ -255,6 +261,23 @@ static int count_needs_checked_path(const cisv_config *config) {
     return getenv("CISV_MAX_ROW_SIZE") != NULL ||
            getenv("CISV_MAX_MEMORY") != NULL ||
            getenv("GOMEMLIMIT") != NULL;
+}
+
+static int count_needs_cli_filter_path(const cli_context *ctx) {
+    if (!ctx) return 0;
+    return ctx->where_enabled;
+}
+
+static int count_needs_header_validation(const cli_context *ctx) {
+    return ctx && ctx->select_names && ctx->select_name_count > 0;
+}
+
+static size_t apply_count_output_controls(const cli_context *ctx, size_t count) {
+    if (!ctx) return count;
+    if (ctx->no_header && count > 0) count--;
+    if (ctx->head > 0 && count > (size_t)ctx->head) count = (size_t)ctx->head;
+    if (ctx->tail > 0 && count > (size_t)ctx->tail) count = (size_t)ctx->tail;
+    return count;
 }
 
 static int count_rows_checked(const char *filename, const cisv_config *config, int quiet, size_t *out_count) {
@@ -288,6 +311,123 @@ static int count_rows_checked(const char *filename, const cisv_config *config, i
     }
 
     *out_count = count_ctx.rows;
+    return 0;
+}
+
+static int validate_count_header_names(const char *filename, cisv_config *config, cli_context *ctx) {
+    if (!filename || !config || !ctx) return -1;
+    if (!count_needs_header_validation(ctx)) return 0;
+
+    cisv_iterator_t *it = cisv_iterator_open(filename, config);
+    if (!it) {
+        perror("cisv_iterator_open");
+        return -1;
+    }
+
+    const char **fields = NULL;
+    const size_t *lengths = NULL;
+    size_t field_count = 0;
+    int rc = cisv_iterator_next(it, &fields, &lengths, &field_count);
+    if (rc == CISV_ITER_OK) {
+        int prepare_rc = prepare_header_state(ctx, fields, lengths, field_count);
+        cisv_iterator_close(it);
+        return prepare_rc;
+    }
+
+    cisv_iterator_close(it);
+    if (rc == CISV_ITER_ERROR) {
+        if (!ctx->quiet) {
+            fprintf(stderr, "Parse error while reading header\n");
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+static int count_rows_with_cli_filters(const char *filename,
+                                       cisv_config *config,
+                                       cli_context *ctx,
+                                       size_t *out_count) {
+    if (!filename || !config || !ctx || !out_count) return -1;
+
+    cisv_iterator_t *it = cisv_iterator_open(filename, config);
+    if (!it) {
+        perror("cisv_iterator_open");
+        return -1;
+    }
+
+    const char **fields = NULL;
+    const size_t *lengths = NULL;
+    size_t field_count = 0;
+    size_t output_rows = 0;
+    int rc;
+
+    while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
+        if (prepare_header_state(ctx, fields, lengths, field_count) != 0) {
+            cisv_iterator_close(it);
+            return -1;
+        }
+
+        if (ctx->no_header && ctx->current_row_num == 0) {
+            if (ctx->current_row_num == SIZE_MAX) {
+                cisv_iterator_close(it);
+                return -1;
+            }
+            ctx->current_row_num++;
+            continue;
+        }
+
+        if (!row_matches_where(ctx, fields, field_count)) {
+            if (ctx->current_row_num == SIZE_MAX) {
+                cisv_iterator_close(it);
+                return -1;
+            }
+            ctx->current_row_num++;
+            continue;
+        }
+
+        if (ctx->head > 0 && ctx->matched_row_count >= (size_t)ctx->head) {
+            if (ctx->current_row_num == SIZE_MAX) {
+                cisv_iterator_close(it);
+                return -1;
+            }
+            ctx->current_row_num++;
+            continue;
+        }
+
+        if (ctx->matched_row_count == SIZE_MAX) {
+            cisv_iterator_close(it);
+            return -1;
+        }
+        ctx->matched_row_count++;
+
+        if (ctx->tail > 0) {
+            if (output_rows < (size_t)ctx->tail) output_rows++;
+        } else {
+            if (output_rows == SIZE_MAX) {
+                cisv_iterator_close(it);
+                return -1;
+            }
+            output_rows++;
+        }
+
+        if (ctx->current_row_num == SIZE_MAX) {
+            cisv_iterator_close(it);
+            return -1;
+        }
+        ctx->current_row_num++;
+    }
+
+    cisv_iterator_close(it);
+    if (rc == CISV_ITER_ERROR) {
+        if (!ctx->quiet) {
+            fprintf(stderr, "Parse error while counting rows\n");
+        }
+        return -1;
+    }
+
+    *out_count = output_rows;
     return 0;
 }
 
@@ -2057,7 +2197,24 @@ int main(int argc, char *argv[]) {
 
     if (ctx.count_only) {
         size_t count = 0;
-        if (parallel) {
+        int cli_filter_count = count_needs_cli_filter_path(&ctx);
+        if (cli_filter_count) {
+            if (count_rows_with_cli_filters(filename, &config, &ctx, &count) != 0) {
+                if (!ctx.quiet) {
+                    fprintf(stderr, "Filtered count failed\n");
+                }
+                if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+                cleanup_cli_context(&ctx);
+                return 1;
+            }
+        } else if (validate_count_header_names(filename, &config, &ctx) != 0) {
+            if (!ctx.quiet) {
+                fprintf(stderr, "Count header validation failed\n");
+            }
+            if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+            cleanup_cli_context(&ctx);
+            return 1;
+        } else if (parallel) {
             if (count_rows_parallel(filename, &config, num_threads, &count) != 0) {
                 if (!ctx.quiet) {
                     fprintf(stderr, "Parallel count failed\n");
@@ -2077,6 +2234,9 @@ int main(int argc, char *argv[]) {
             }
         } else {
             count = cisv_parser_count_rows_with_config(filename, &config);
+        }
+        if (!cli_filter_count) {
+            count = apply_count_output_controls(&ctx, count);
         }
         printf("%zu\n", count);
         if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
