@@ -214,6 +214,11 @@ test: $(CLI_BIN)
 	@printf '"line1\nline2"\n' > /tmp/test_select_multiline.expected
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select 0 /tmp/test_multiline.csv > /tmp/test_select_multiline.out
 	@cmp -s /tmp/test_select_multiline.expected /tmp/test_select_multiline.out
+	@printf 'a,b\r1,2\r' > /tmp/test_cr_only.csv
+	@printf 'a,b\n1,2\n' > /tmp/test_cr_only.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_cr_only.csv > /tmp/test_cr_only.out
+	@cmp -s /tmp/test_cr_only.expected /tmp/test_cr_only.out
+	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test_cr_only.csv)" = "2"
 	@printf '#skip\n1,,3\n\n2,3,4\n' > /tmp/test_count_semantics.csv
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --skip-empty --comment '#' /tmp/test_count_semantics.csv)" = "2"
 	@printf 'a,b\n1,2' > /tmp/test_count_no_newline.csv
@@ -248,7 +253,7 @@ test: $(CLI_BIN)
 	@rmdir /tmp/test_cisv_stdin_tmp
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err /tmp/test_bad_iterator_quote.out /tmp/test_bad_iterator_quote.err /tmp/test_unterminated_iterator_quote.csv /tmp/test_unterminated_iterator_quote.out /tmp/test_unterminated_iterator_quote.err
-	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_count_semantics.csv
+	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_cr_only.csv /tmp/test_cr_only.expected /tmp/test_cr_only.out /tmp/test_count_semantics.csv
 	@rm -f /tmp/test_count_no_newline.csv /tmp/test_count_empty.csv /tmp/test_count_range.csv /tmp/test_count_select_name_missing.out /tmp/test_count_select_name_missing.err
 	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
 	@rm -f /tmp/test_bad_delimiter.out /tmp/test_bad_delimiter.err /tmp/test_bad_quote.out /tmp/test_bad_quote.err
