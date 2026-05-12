@@ -194,6 +194,7 @@ typedef struct {
     size_t current_input_col;
     int current_select_pos;
     size_t current_row_num;
+    size_t matched_row_count;
     int in_header;
     int no_header;
     int quiet;
@@ -937,10 +938,16 @@ static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t 
         return 0;
     }
 
-    if (ctx->head > 0 && ctx->current_row_num >= (size_t)ctx->head) {
+    if (!row_matches_where(ctx, row, field_count)) {
         ctx->current_row_num++;
         return 0;
     }
+
+    if (ctx->head > 0 && ctx->matched_row_count >= (size_t)ctx->head) {
+        ctx->current_row_num++;
+        return 0;
+    }
+    ctx->matched_row_count++;
 
     if (ctx->tail > 0) {
         if (ctx->tail_buffer[ctx->tail_pos]) {
@@ -960,13 +967,11 @@ static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t 
         ctx->tail_field_counts[ctx->tail_pos] = field_count;
         ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
     } else {
-        if (row_matches_where(ctx, row, field_count)) {
-            if (output_row(ctx, row, field_count) != 0) {
-                fprintf(stderr, "Failed writing output row\n");
-                return -1;
-            }
-            ctx->row_count++;
+        if (output_row(ctx, row, field_count) != 0) {
+            fprintf(stderr, "Failed writing output row\n");
+            return -1;
         }
+        ctx->row_count++;
     }
 
     ctx->current_row_num++;
@@ -2011,14 +2016,12 @@ int main(int argc, char *argv[]) {
             size_t idx = (start + i) % ctx.tail;
             if (!ctx.tail_buffer[idx]) continue;
 
-            if (row_matches_where(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx])) {
-                if (output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]) != 0) {
-                    if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
-                    cleanup_cli_context(&ctx);
-                    return 1;
-                }
-                ctx.row_count++;
+            if (output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]) != 0) {
+                if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
+                cleanup_cli_context(&ctx);
+                return 1;
             }
+            ctx.row_count++;
         }
     }
     if (ctx.output_mode == 1) {
