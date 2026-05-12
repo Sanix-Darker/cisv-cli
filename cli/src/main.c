@@ -932,6 +932,11 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                 }
             } else {
                 while (p < end && *p != (uint8_t)delimiter && *p != '\n') {
+                    if (*p == (uint8_t)quote) {
+                        fprintf(stderr, "Parse error: quote inside unquoted field\n");
+                        result = -1;
+                        goto done;
+                    }
                     p++;
                 }
                 field_end = p;
