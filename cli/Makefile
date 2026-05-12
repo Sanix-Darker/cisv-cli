@@ -248,6 +248,13 @@ test: $(CLI_BIN)
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --escape '"' --count /tmp/test.csv >/tmp/test_bad_escape_quote.out 2>/tmp/test_bad_escape_quote.err
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-procs 0 --count /tmp/test.csv >/tmp/test_max_procs_fail.out 2>/tmp/test_max_procs_fail.err
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory nope --count /tmp/test.csv >/tmp/test_max_memory_fail.out 2>/tmp/test_max_memory_fail.err
+	@! env CISV_MAX_MEMORY=nope LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test.csv >/tmp/test_env_bad_memory.out 2>/tmp/test_env_bad_memory.err
+	@grep -q 'CISV_MAX_MEMORY' /tmp/test_env_bad_memory.err
+	@! env GOMAXPROCS=0 LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --parallel --count /tmp/test.csv >/tmp/test_env_bad_procs.out 2>/tmp/test_env_bad_procs.err
+	@grep -q 'GOMAXPROCS' /tmp/test_env_bad_procs.err
+	@! env CISV_PARALLEL_MIN_BYTES=nope LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --parallel --count /tmp/test.csv >/tmp/test_env_bad_parallel_min.out 2>/tmp/test_env_bad_parallel_min.err
+	@grep -q 'CISV_PARALLEL_MIN_BYTES' /tmp/test_env_bad_parallel_min.err
+	@test "$$(env GOMEMLIMIT=nope LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory 1MiB --count /tmp/test.csv)" = "3"
 	@rm /tmp/test.csv
 	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
 	@rmdir /tmp/test_cisv_stdin_tmp
@@ -259,4 +266,5 @@ test: $(CLI_BIN)
 	@rm -f /tmp/test_bad_delimiter.out /tmp/test_bad_delimiter.err /tmp/test_bad_quote.out /tmp/test_bad_quote.err
 	@rm -f /tmp/test_bad_escape.out /tmp/test_bad_escape.err /tmp/test_bad_comment.out /tmp/test_bad_comment.err /tmp/test_bad_escape_quote.out /tmp/test_bad_escape_quote.err
 	@rm -f /tmp/test_max_procs_fail.out /tmp/test_max_procs_fail.err /tmp/test_max_memory_fail.out /tmp/test_max_memory_fail.err
+	@rm -f /tmp/test_env_bad_memory.out /tmp/test_env_bad_memory.err /tmp/test_env_bad_procs.out /tmp/test_env_bad_procs.err /tmp/test_env_bad_parallel_min.out /tmp/test_env_bad_parallel_min.err
 	@echo "CLI tests passed"

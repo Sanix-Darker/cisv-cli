@@ -156,6 +156,57 @@ static int safe_parse_size(const char *str, size_t *result) {
     return 0;
 }
 
+static const char *nonempty_env(const char *name) {
+    const char *value = getenv(name);
+    return (value && *value) ? value : NULL;
+}
+
+static int validate_positive_int_env(const char *name, const char *value) {
+    int parsed = 0;
+    if (safe_parse_int(value, &parsed, 0) != 0 || parsed <= 0) {
+        fprintf(stderr, "Error: %s must be a positive integer\n", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_positive_size_env(const char *name, const char *value) {
+    size_t parsed = 0;
+    if (safe_parse_size(value, &parsed) != 0) {
+        fprintf(stderr, "Error: %s must be a positive byte size\n", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_resource_environment(void) {
+    const char *value = nonempty_env("CISV_MAX_PROCS");
+    if (value) {
+        if (validate_positive_int_env("CISV_MAX_PROCS", value) != 0) return -1;
+    } else if ((value = nonempty_env("GOMAXPROCS")) != NULL) {
+        if (validate_positive_int_env("GOMAXPROCS", value) != 0) return -1;
+    }
+
+    value = nonempty_env("CISV_MAX_MEMORY");
+    if (value) {
+        if (validate_positive_size_env("CISV_MAX_MEMORY", value) != 0) return -1;
+    } else if ((value = nonempty_env("GOMEMLIMIT")) != NULL) {
+        if (validate_positive_size_env("GOMEMLIMIT", value) != 0) return -1;
+    }
+
+    value = nonempty_env("CISV_MAX_ROW_SIZE");
+    if (value && validate_positive_size_env("CISV_MAX_ROW_SIZE", value) != 0) {
+        return -1;
+    }
+
+    value = nonempty_env("CISV_PARALLEL_MIN_BYTES");
+    if (value && validate_positive_size_env("CISV_PARALLEL_MIN_BYTES", value) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static int parse_single_byte_option(const char *name, const char *arg, char *out) {
     if (!name || !arg || !out || arg[0] == '\0') {
         fprintf(stderr, "Error: %s cannot be empty\n", name ? name : "Option");
@@ -2165,6 +2216,11 @@ int main(int argc, char *argv[]) {
     if (config.escape != '\0' && config.escape == config.quote) {
         fprintf(stderr, "Error: Escape and quote character cannot be the same ('%c')\n",
                 config.escape);
+        cleanup_cli_context(&ctx);
+        return 1;
+    }
+
+    if (validate_resource_environment() != 0) {
         cleanup_cli_context(&ctx);
         return 1;
     }
