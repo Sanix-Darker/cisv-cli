@@ -84,6 +84,78 @@ print_tool_version() {
     fi
 }
 
+print_make_value() {
+    local var="$1"
+    local dir=""
+
+    for candidate in "./cli" "/benchmark/cisv/cli"; do
+        if [ -f "$candidate/Makefile" ]; then
+            dir="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$dir" ]; then
+        echo "unknown"
+        return
+    fi
+
+    make -C "$dir" -pn 2>/dev/null | awk -v var="$var" '
+        index($0, var " = ") == 1 {
+            sub("^[^=]*= ", "")
+            print
+            found = 1
+            exit
+        }
+        END {
+            if (!found) print "unknown"
+        }
+    '
+}
+
+print_build_context() {
+    local cc
+    local cc_bin
+    local cflags
+    local ldflags
+    local base_cflags
+    local arch_cflags
+    local lto_cflags
+    local security_cflags
+    local lto_ldflags
+    local strip_ldflags
+    local security_ldflags
+
+    cc=$(print_make_value "CC")
+    cc_bin=${cc%% *}
+    cflags=$(print_make_value "CFLAGS")
+    ldflags=$(print_make_value "LDFLAGS")
+    base_cflags=$(print_make_value "BASE_CFLAGS")
+    arch_cflags=$(print_make_value "ARCH_CFLAGS")
+    lto_cflags=$(print_make_value "LTO_CFLAGS")
+    security_cflags=$(print_make_value "SECURITY_CFLAGS")
+    lto_ldflags=$(print_make_value "LTO_LDFLAGS")
+    strip_ldflags=$(print_make_value "STRIP_LDFLAGS")
+    security_ldflags=$(print_make_value "SECURITY_LDFLAGS")
+
+    if command_exists "$cc_bin"; then
+        echo "Compiler: $($cc_bin --version 2>/dev/null | head -n 1 || echo "$cc")"
+    else
+        echo "Compiler: $cc"
+    fi
+    echo "CFLAGS: $cflags"
+    echo "BASE_CFLAGS: $base_cflags"
+    echo "ARCH_CFLAGS: $arch_cflags"
+    echo "LTO_CFLAGS: $lto_cflags"
+    echo "SECURITY_CFLAGS: $security_cflags"
+    echo "LDFLAGS: $ldflags"
+    echo "LTO_LDFLAGS: $lto_ldflags"
+    echo "STRIP_LDFLAGS: $strip_ldflags"
+    echo "SECURITY_LDFLAGS: $security_ldflags"
+    echo "Cache policy: warm-cache repeated runs; this script does not drop OS page cache"
+    echo "CPU affinity: not pinned by this script; use taskset/cpuset externally for pinned runs"
+}
+
 # ============================================================================
 # TEST DATA GENERATION
 # ============================================================================
@@ -397,6 +469,7 @@ main() {
     echo "Slice start: $SLICE_START"
     echo "CPU cores: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
     echo "Resource env: GOMAXPROCS=${GOMAXPROCS:-unset} GOMEMLIMIT=${GOMEMLIMIT:-unset} CISV_MAX_PROCS=${CISV_MAX_PROCS:-unset} CISV_MAX_MEMORY=${CISV_MAX_MEMORY:-unset} CISV_MAX_ROW_SIZE=${CISV_MAX_ROW_SIZE:-unset}"
+    print_build_context
     echo "============================================================"
     echo ""
 
