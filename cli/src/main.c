@@ -905,7 +905,11 @@ static int prepare_header_state(cli_context *ctx, const char *const *row, size_t
             int resolved = 0;
             for (int i = 0; i < ctx->select_name_count; i++) {
                 int idx = resolve_header_index(ctx, ctx->select_names[i]);
-                if (idx >= 0) ctx->select_cols[resolved++] = idx;
+                if (idx < 0) {
+                    fprintf(stderr, "Missing selected column: %s\n", ctx->select_names[i]);
+                    return -1;
+                }
+                ctx->select_cols[resolved++] = idx;
             }
             ctx->select_count = resolved;
             qsort(ctx->select_cols, ctx->select_count, sizeof(int), compare_ints_asc);
