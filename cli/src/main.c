@@ -185,6 +185,7 @@ typedef struct {
     cisv_writer *csv_writer;
 
     char ***tail_buffer;
+    size_t **tail_field_lengths;
     size_t *tail_field_counts;
     size_t tail_pos;
 
@@ -202,6 +203,7 @@ typedef struct {
     int json_started;
 
     char **header_fields;
+    size_t *header_field_lengths;
     size_t header_field_count;
 
     char **select_names;
@@ -305,26 +307,46 @@ static int parse_double_strict(const char *s, double *out) {
     return 1;
 }
 
-static char **duplicate_row_fields(const char *const *row, size_t field_count) {
+static size_t row_field_len(const char *const *row, const size_t *lengths, size_t index) {
+    if (lengths) return lengths[index];
+    return row[index] ? strlen(row[index]) : 0;
+}
+
+static char **duplicate_row_fields(const char *const *row, const size_t *lengths, size_t field_count) {
     char **copy = calloc(field_count, sizeof(char *));
     if (!copy) return NULL;
 
     for (size_t i = 0; i < field_count; i++) {
-        copy[i] = strdup(row[i] ? row[i] : "");
+        size_t len = row_field_len(row, lengths, i);
+        copy[i] = malloc(len + 1);
         if (!copy[i]) {
             for (size_t j = 0; j < i; j++) free(copy[j]);
             free(copy);
             return NULL;
         }
+        if (len > 0 && row[i]) {
+            memcpy(copy[i], row[i], len);
+        }
+        copy[i][len] = '\0';
     }
 
     return copy;
 }
 
-static void json_write_escaped(FILE *out, const char *s) {
+static size_t *duplicate_row_lengths(const char *const *row, const size_t *lengths, size_t field_count) {
+    size_t *copy = calloc(field_count, sizeof(size_t));
+    if (!copy) return NULL;
+    for (size_t i = 0; i < field_count; i++) {
+        copy[i] = row_field_len(row, lengths, i);
+    }
+    return copy;
+}
+
+static void json_write_escaped_len(FILE *out, const char *s, size_t len) {
     fputc('"', out);
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        switch (*p) {
+    const unsigned char *bytes = (const unsigned char *)(s ? s : "");
+    for (size_t i = 0; i < len; i++) {
+        switch (bytes[i]) {
             case '"':  fputs("\\\"", out); break;
             case '\\': fputs("\\\\", out); break;
             case '\b': fputs("\\b", out); break;
@@ -333,10 +355,10 @@ static void json_write_escaped(FILE *out, const char *s) {
             case '\r': fputs("\\r", out); break;
             case '\t': fputs("\\t", out); break;
             default:
-                if (*p < 0x20) {
-                    fprintf(out, "\\u%04x", *p);
+                if (bytes[i] < 0x20) {
+                    fprintf(out, "\\u%04x", bytes[i]);
                 } else {
-                    fputc(*p, out);
+                    fputc(bytes[i], out);
                 }
         }
     }
@@ -802,7 +824,7 @@ done:
     return result;
 }
 
-static int output_row(cli_context *ctx, const char *const *row, size_t field_count) {
+static int output_row(cli_context *ctx, const char *const *row, const size_t *lengths, size_t field_count) {
     int first = 1;
     if (ctx->output_mode == 1) {
         if (!ctx->json_started) {
@@ -821,17 +843,19 @@ static int output_row(cli_context *ctx, const char *const *row, size_t field_cou
                     int col = ctx->select_cols[i];
                     if (col < 0 || (size_t)col >= field_count || (size_t)col >= ctx->header_field_count) continue;
                     if (!first) fputc(',', ctx->output);
-                    json_write_escaped(ctx->output, ctx->header_fields[col]);
+                    json_write_escaped_len(ctx->output, ctx->header_fields[col],
+                                           ctx->header_field_lengths ? ctx->header_field_lengths[col] : strlen(ctx->header_fields[col]));
                     fputc(':', ctx->output);
-                    json_write_escaped(ctx->output, row[col]);
+                    json_write_escaped_len(ctx->output, row[col], row_field_len(row, lengths, (size_t)col));
                     first = 0;
                 }
             } else {
                 for (size_t i = 0; i < field_count && i < ctx->header_field_count; i++) {
                     if (!first) fputc(',', ctx->output);
-                    json_write_escaped(ctx->output, ctx->header_fields[i]);
+                    json_write_escaped_len(ctx->output, ctx->header_fields[i],
+                                           ctx->header_field_lengths ? ctx->header_field_lengths[i] : strlen(ctx->header_fields[i]));
                     fputc(':', ctx->output);
-                    json_write_escaped(ctx->output, row[i]);
+                    json_write_escaped_len(ctx->output, row[i], row_field_len(row, lengths, i));
                     first = 0;
                 }
             }
@@ -843,13 +867,13 @@ static int output_row(cli_context *ctx, const char *const *row, size_t field_cou
                     int col = ctx->select_cols[i];
                     if (col < 0 || (size_t)col >= field_count) continue;
                     if (!first) fputc(',', ctx->output);
-                    json_write_escaped(ctx->output, row[col]);
+                    json_write_escaped_len(ctx->output, row[col], row_field_len(row, lengths, (size_t)col));
                     first = 0;
                 }
             } else {
                 for (size_t i = 0; i < field_count; i++) {
                     if (!first) fputc(',', ctx->output);
-                    json_write_escaped(ctx->output, row[i]);
+                    json_write_escaped_len(ctx->output, row[i], row_field_len(row, lengths, i));
                     first = 0;
                 }
             }
@@ -867,27 +891,30 @@ static int output_row(cli_context *ctx, const char *const *row, size_t field_cou
         for (int i = 0; i < ctx->select_count; i++) {
             int col = ctx->select_cols[i];
             if (col < 0 || (size_t)col >= field_count) continue;
-            if (cisv_writer_field_str(ctx->csv_writer, row[col]) < 0) return -1;
+            if (cisv_writer_field(ctx->csv_writer, row[col], row_field_len(row, lengths, (size_t)col)) < 0) return -1;
         }
     } else {
         for (size_t i = 0; i < field_count; i++) {
-            if (cisv_writer_field_str(ctx->csv_writer, row[i]) < 0) return -1;
+            if (cisv_writer_field(ctx->csv_writer, row[i], row_field_len(row, lengths, i)) < 0) return -1;
         }
     }
     if (cisv_writer_row_end(ctx->csv_writer) < 0) return -1;
     return 0;
 }
 
-static int prepare_header_state(cli_context *ctx, const char *const *row, size_t field_count) {
+static int prepare_header_state(cli_context *ctx, const char *const *row, const size_t *lengths, size_t field_count) {
     if (ctx->current_row_num == 0) {
         if (ctx->header_fields) {
             for (size_t i = 0; i < ctx->header_field_count; i++) free(ctx->header_fields[i]);
             free(ctx->header_fields);
             ctx->header_fields = NULL;
         }
+        free(ctx->header_field_lengths);
+        ctx->header_field_lengths = NULL;
         ctx->header_field_count = field_count;
-        ctx->header_fields = duplicate_row_fields(row, field_count);
-        if (!ctx->header_fields) {
+        ctx->header_fields = duplicate_row_fields(row, lengths, field_count);
+        ctx->header_field_lengths = duplicate_row_lengths(row, lengths, field_count);
+        if (!ctx->header_fields || !ctx->header_field_lengths) {
             fprintf(stderr, "Memory allocation failed\n");
             return -1;
         }
@@ -924,8 +951,8 @@ static int prepare_header_state(cli_context *ctx, const char *const *row, size_t
     return 0;
 }
 
-static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t field_count) {
-    if (prepare_header_state(ctx, row, field_count) != 0) {
+static int process_row_for_cli(cli_context *ctx, const char *const *row, const size_t *lengths, size_t field_count) {
+    if (prepare_header_state(ctx, row, lengths, field_count) != 0) {
         return -1;
     }
 
@@ -955,19 +982,27 @@ static int process_row_for_cli(cli_context *ctx, const char *const *row, size_t 
                 free(ctx->tail_buffer[ctx->tail_pos][i]);
             }
             free(ctx->tail_buffer[ctx->tail_pos]);
+            free(ctx->tail_field_lengths[ctx->tail_pos]);
         }
 
-        char **row_copy = duplicate_row_fields(row, field_count);
-        if (!row_copy) {
+        char **row_copy = duplicate_row_fields(row, lengths, field_count);
+        size_t *length_copy = duplicate_row_lengths(row, lengths, field_count);
+        if (!row_copy || !length_copy) {
+            if (row_copy) {
+                for (size_t i = 0; i < field_count; i++) free(row_copy[i]);
+                free(row_copy);
+            }
+            free(length_copy);
             fprintf(stderr, "Memory allocation failed\n");
             return -1;
         }
 
         ctx->tail_buffer[ctx->tail_pos] = row_copy;
+        ctx->tail_field_lengths[ctx->tail_pos] = length_copy;
         ctx->tail_field_counts[ctx->tail_pos] = field_count;
         ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
     } else {
-        if (output_row(ctx, row, field_count) != 0) {
+        if (output_row(ctx, row, lengths, field_count) != 0) {
             fprintf(stderr, "Failed writing output row\n");
             return -1;
         }
@@ -1128,7 +1163,7 @@ static int parse_file_parallel_cli(const char *filename, cisv_config *config, cl
 
         for (size_t i = 0; i < result->row_count; i++) {
             cisv_row_t *row = &result->rows[i];
-            if (process_row_for_cli(ctx, (const char *const *)row->fields, row->field_count) != 0) {
+            if (process_row_for_cli(ctx, (const char *const *)row->fields, row->field_lengths, row->field_count) != 0) {
                 cisv_results_free(results, result_count);
                 return -1;
             }
@@ -1152,8 +1187,7 @@ static int parse_file_with_iterator_cli(const char *filename, cisv_config *confi
     int rc;
 
     while ((rc = cisv_iterator_next(it, &fields, &lengths, &field_count)) == CISV_ITER_OK) {
-        (void)lengths;
-        if (process_row_for_cli(ctx, fields, field_count) != 0) {
+        if (process_row_for_cli(ctx, fields, lengths, field_count) != 0) {
             cisv_iterator_close(it);
             return -1;
         }
@@ -1515,6 +1549,7 @@ static void cleanup_cli_context(cli_context *ctx) {
         }
         free(ctx->header_fields);
     }
+    free(ctx->header_field_lengths);
 
     if (ctx->tail_buffer) {
         for (int i = 0; i < ctx->tail; i++) {
@@ -1523,9 +1558,13 @@ static void cleanup_cli_context(cli_context *ctx) {
                 free(ctx->tail_buffer[i][j]);
             }
             free(ctx->tail_buffer[i]);
+            if (ctx->tail_field_lengths) {
+                free(ctx->tail_field_lengths[i]);
+            }
         }
         free(ctx->tail_buffer);
     }
+    free(ctx->tail_field_lengths);
 
     free(ctx->tail_field_counts);
     free(ctx->csv_output_buffer);
@@ -1854,8 +1893,9 @@ int main(int argc, char *argv[]) {
                 }
                 ctx.tail = tail_val;
                 ctx.tail_buffer = calloc(ctx.tail, sizeof(char **));
+                ctx.tail_field_lengths = calloc(ctx.tail, sizeof(size_t *));
                 ctx.tail_field_counts = calloc(ctx.tail, sizeof(size_t));
-                if (!ctx.tail_buffer || !ctx.tail_field_counts) {
+                if (!ctx.tail_buffer || !ctx.tail_field_lengths || !ctx.tail_field_counts) {
                     fprintf(stderr, "Memory allocation failed\n");
                     cleanup_cli_context(&ctx);
                     return 1;
@@ -2016,7 +2056,10 @@ int main(int argc, char *argv[]) {
             size_t idx = (start + i) % ctx.tail;
             if (!ctx.tail_buffer[idx]) continue;
 
-            if (output_row(&ctx, (const char *const *)ctx.tail_buffer[idx], ctx.tail_field_counts[idx]) != 0) {
+            if (output_row(&ctx,
+                           (const char *const *)ctx.tail_buffer[idx],
+                           ctx.tail_field_lengths[idx],
+                           ctx.tail_field_counts[idx]) != 0) {
                 if (stdin_tmp_path[0]) unlink(stdin_tmp_path);
                 cleanup_cli_context(&ctx);
                 return 1;
