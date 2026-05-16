@@ -838,12 +838,7 @@ static int cli_csv_output_raw_or_quote(
     int already_quoted,
     int first_field
 ) {
-    if (!already_quoted &&
-        (memchr(start, ctx->config->quote, (size_t)(end - start)) ||
-         memchr(start, '\r', (size_t)(end - start)))) {
-        return cli_csv_output_field(ctx, (const char *)start, (size_t)(end - start), first_field);
-    }
-
+    (void)already_quoted;
     if (!first_field && cli_csv_output_char(ctx, ctx->config->delimiter) != 0) return -1;
     return cli_csv_output_append(ctx, (const char *)start, (size_t)(end - start));
 }
@@ -1019,6 +1014,99 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
 
 done:
     munmap(base, (size_t)st.st_size);
+    return result;
+}
+
+static int project_select_file_noquote_fast(const char *filename, cisv_config *config, cli_context *ctx) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return CLI_FAST_ERROR;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        perror("fstat");
+        close(fd);
+        return CLI_FAST_ERROR;
+    }
+
+    if (st.st_size == 0) {
+        close(fd);
+        return CLI_FAST_DONE;
+    }
+
+    uint8_t *base = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) {
+        perror("mmap");
+        return CLI_FAST_ERROR;
+    }
+
+    const size_t size = (size_t)st.st_size;
+    const uint8_t *end = base + size;
+    const uint8_t delimiter = (uint8_t)config->delimiter;
+    int result = CLI_FAST_DONE;
+
+    if (memchr(base, (uint8_t)config->quote, size) || memchr(base, '\r', size)) {
+        result = CLI_FAST_FALLBACK;
+        goto done;
+    }
+
+    size_t input_row_num = 0;
+    const uint8_t *line_start = base;
+    while (line_start < end) {
+        const uint8_t *newline = memchr(line_start, '\n', (size_t)(end - line_start));
+        const uint8_t *line_end = newline ? newline : end;
+        const uint8_t *next_line = newline ? newline + 1 : end;
+
+        if (!(ctx->no_header && input_row_num == 0)) {
+            int col = 0;
+            int select_pos = 0;
+            int emitted = 0;
+            const uint8_t *field_start = line_start;
+
+            while (field_start <= line_end) {
+                const uint8_t *field_end = memchr(field_start, delimiter, (size_t)(line_end - field_start));
+                if (!field_end) field_end = line_end;
+
+                if (cli_csv_selected_col(ctx, col, &select_pos)) {
+                    if (emitted && cli_csv_output_char(ctx, config->delimiter) != 0) {
+                        result = CLI_FAST_ERROR;
+                        goto done;
+                    }
+                    if (cli_csv_output_append(ctx, (const char *)field_start,
+                                              (size_t)(field_end - field_start)) != 0) {
+                        result = CLI_FAST_ERROR;
+                        goto done;
+                    }
+                    emitted = 1;
+                }
+
+                if (field_end == line_end) break;
+                field_start = field_end + 1;
+                col++;
+            }
+
+            if (cli_csv_output_char(ctx, '\n') != 0) {
+                result = CLI_FAST_ERROR;
+                goto done;
+            }
+            ctx->row_count++;
+        }
+
+        if (input_row_num == SIZE_MAX) {
+            result = CLI_FAST_ERROR;
+            goto done;
+        }
+        input_row_num++;
+        line_start = next_line;
+    }
+
+    if (cli_csv_output_flush(ctx) != 0) result = CLI_FAST_ERROR;
+
+done:
+    munmap(base, size);
     return result;
 }
 
@@ -2663,6 +2751,14 @@ int main(int argc, char *argv[]) {
     }
 
     if (can_use_fast_select_projector(&config, &ctx, parallel)) {
+        int noquote_project_result = project_select_file_noquote_fast(filename, &config, &ctx);
+        if (noquote_project_result == CLI_FAST_ERROR) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
+        }
+        if (noquote_project_result == CLI_FAST_DONE) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
+        }
+
         int project_result = project_select_file_fast(filename, &config, &ctx);
         if (project_result < 0) {
             return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
