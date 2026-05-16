@@ -523,7 +523,7 @@ main() {
 
     # qsv count
     if command_exists qsv; then
-        run_benchmark "qsv" "qsv count \"$filepath\"" "count"
+        run_benchmark "qsv" "qsv count -n \"$filepath\"" "count"
     else
         echo "Benchmarking qsv..."
         echo "  Skipped: qsv not installed"
@@ -531,7 +531,7 @@ main() {
 
     # xsv count
     if command_exists xsv; then
-        run_benchmark "xsv" "xsv count \"$filepath\"" "count"
+        run_benchmark "xsv" "xsv count -n \"$filepath\"" "count"
     else
         echo "Benchmarking xsv..."
         echo "  Skipped: xsv not installed"
@@ -649,9 +649,9 @@ main() {
         run_benchmark "cisv" "$CISV_BIN -s 0,2,3 \"$filepath\" | wc -l" "select"
     fi
 
-    # xan select (1-indexed)
+    # xan select (0-indexed)
     if command_exists xan; then
-        run_benchmark "xan" "xan select 1,3,4 \"$filepath\" | wc -l" "select"
+        run_benchmark "xan" "xan select 0,2,3 \"$filepath\" | wc -l" "select"
     fi
 
     # qsv select (1-indexed)
@@ -732,11 +732,11 @@ main() {
     fi
 
     if command_exists xan; then
-        run_benchmark "xan-head" "xan head -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
-        run_benchmark "xan-slice-head" "xan slice -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
-        run_benchmark "xan-tail" "xan tail -l $SLICE_ROWS \"$filepath\" | wc -l" "tail"
-        run_benchmark "xan-slice-tail" "xan slice -L $SLICE_ROWS \"$filepath\" | wc -l" "tail"
-        run_benchmark "xan-slice" "xan slice -s $xan_slice_start -l $SLICE_ROWS \"$filepath\" | wc -l" "slice"
+        run_benchmark "xan-head" "xan head -n -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
+        run_benchmark "xan-slice-head" "xan slice -n -l $SLICE_ROWS \"$filepath\" | wc -l" "head"
+        run_benchmark "xan-tail" "xan tail -n -l $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+        run_benchmark "xan-slice-tail" "xan slice -n -L $SLICE_ROWS \"$filepath\" | wc -l" "tail"
+        run_benchmark "xan-slice" "xan slice -n -s $xan_slice_start -l $SLICE_ROWS \"$filepath\" | wc -l" "slice"
     else
         echo "Benchmarking xan row slicing..."
         echo "  Skipped: xan not installed"
