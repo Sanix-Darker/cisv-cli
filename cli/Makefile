@@ -199,6 +199,15 @@ test: $(CLI_BIN)
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --no-header --where '0<2' --tail 1 /tmp/test.csv > /tmp/test_where_tail.out
 	@grep -q '^1,2,3$$' /tmp/test_where_tail.out
 	@! grep -q '^4,5,6$$' /tmp/test_where_tail.out
+	@printf '4,5,6\n' > /tmp/test_tail.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --tail 1 /tmp/test.csv > /tmp/test_tail.out
+	@cmp -s /tmp/test_tail.expected /tmp/test_tail.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --no-header --tail 1 /tmp/test.csv > /tmp/test_tail_no_header.out
+	@cmp -s /tmp/test_tail.expected /tmp/test_tail_no_header.out
+	@printf 'a,b\r1,2\r3,4\r' > /tmp/test_tail_cr_only.csv
+	@printf '1,2\n3,4\n' > /tmp/test_tail_cr_only.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --tail 2 /tmp/test_tail_cr_only.csv > /tmp/test_tail_cr_only.out
+	@cmp -s /tmp/test_tail_cr_only.expected /tmp/test_tail_cr_only.out
 	@printf '"a,b",c\n' > /tmp/test_quoted.csv
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_quoted.csv > /tmp/test_quoted.out
 	@grep -q '^"a,b",c$$' /tmp/test_quoted.out
@@ -229,6 +238,9 @@ test: $(CLI_BIN)
 	@printf '"line1\nline2",x\n' > /tmp/test_head_multiline.expected
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --head 1 /tmp/test_multiline.csv > /tmp/test_head_multiline.out
 	@cmp -s /tmp/test_head_multiline.expected /tmp/test_head_multiline.out
+	@printf '"line1\nline2",x\n' > /tmp/test_tail_multiline.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --tail 1 /tmp/test_multiline.csv > /tmp/test_tail_multiline.out
+	@cmp -s /tmp/test_tail_multiline.expected /tmp/test_tail_multiline.out
 	@printf 'a,b\r1,2\r' > /tmp/test_cr_only.csv
 	@printf 'a,b\n1,2\n' > /tmp/test_cr_only.expected
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_cr_only.csv > /tmp/test_cr_only.out
@@ -276,6 +288,7 @@ test: $(CLI_BIN)
 	@rm /tmp/test.csv
 	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
 	@rm -f /tmp/test_head.expected /tmp/test_head.out /tmp/test_head_no_header.expected /tmp/test_head_no_header.out /tmp/test_head_cr_only.csv /tmp/test_head_cr_only.expected /tmp/test_head_cr_only.out /tmp/test_head_multiline.expected /tmp/test_head_multiline.out
+	@rm -f /tmp/test_tail.expected /tmp/test_tail.out /tmp/test_tail_no_header.out /tmp/test_tail_cr_only.csv /tmp/test_tail_cr_only.expected /tmp/test_tail_cr_only.out /tmp/test_tail_multiline.expected /tmp/test_tail_multiline.out
 	@rmdir /tmp/test_cisv_stdin_tmp
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_select_unquoted_quote.err /tmp/test_unquoted_quote.out /tmp/test_unquoted_quote.err /tmp/test_select_unquoted_quote_relaxed.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err /tmp/test_bad_iterator_quote.out /tmp/test_bad_iterator_quote.err /tmp/test_unterminated_iterator_quote.csv /tmp/test_unterminated_iterator_quote.out /tmp/test_unterminated_iterator_quote.err
