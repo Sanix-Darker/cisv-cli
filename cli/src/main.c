@@ -13,6 +13,10 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#if defined(__AVX2__) || defined(__SSE2__)
+#include <immintrin.h>
+#endif
+
 #include "cisv/parser.h"
 #include "cisv/writer.h"
 
@@ -831,6 +835,37 @@ static int cli_csv_selected_col(const cli_context *ctx, int col, int *select_pos
     return *select_pos < ctx->select_count && ctx->select_cols[*select_pos] == col;
 }
 
+static int cli_memchr2(const uint8_t *data, size_t size, uint8_t a, uint8_t b) {
+    size_t i = 0;
+
+#if defined(__AVX2__)
+    const __m256i av = _mm256_set1_epi8((char)a);
+    const __m256i bv = _mm256_set1_epi8((char)b);
+    while (i + 32 <= size) {
+        __m256i chunk = _mm256_loadu_si256((const __m256i *)(data + i));
+        __m256i am = _mm256_cmpeq_epi8(chunk, av);
+        __m256i bm = _mm256_cmpeq_epi8(chunk, bv);
+        if (_mm256_movemask_epi8(_mm256_or_si256(am, bm)) != 0) return 1;
+        i += 32;
+    }
+#elif defined(__SSE2__)
+    const __m128i av = _mm_set1_epi8((char)a);
+    const __m128i bv = _mm_set1_epi8((char)b);
+    while (i + 16 <= size) {
+        __m128i chunk = _mm_loadu_si128((const __m128i *)(data + i));
+        __m128i am = _mm_cmpeq_epi8(chunk, av);
+        __m128i bm = _mm_cmpeq_epi8(chunk, bv);
+        if (_mm_movemask_epi8(_mm_or_si128(am, bm)) != 0) return 1;
+        i += 16;
+    }
+#endif
+
+    for (; i < size; i++) {
+        if (data[i] == a || data[i] == b) return 1;
+    }
+    return 0;
+}
+
 static int cli_csv_output_raw_or_quote(
     cli_context *ctx,
     const uint8_t *start,
@@ -1048,7 +1083,7 @@ static int project_select_file_noquote_fast(const char *filename, cisv_config *c
     const uint8_t delimiter = (uint8_t)config->delimiter;
     int result = CLI_FAST_DONE;
 
-    if (memchr(base, (uint8_t)config->quote, size) || memchr(base, '\r', size)) {
+    if (cli_memchr2(base, size, (uint8_t)config->quote, '\r')) {
         result = CLI_FAST_FALLBACK;
         goto done;
     }
@@ -1411,6 +1446,141 @@ static int copy_tail_file_fast(const char *filename, cisv_config *config, cli_co
                 goto done;
             }
             if (base[selected_end - 1] != '\n') {
+                if (cli_csv_output_char(ctx, '\n') != 0) {
+                    result = CLI_FAST_ERROR;
+                    goto done;
+                }
+            }
+        }
+        ctx->row_count += cli_count_physical_rows_in_region(base, selected_start, selected_end);
+    }
+
+    if (cli_csv_output_flush(ctx) != 0) result = CLI_FAST_ERROR;
+
+done:
+    munmap(base, size);
+    return result;
+}
+
+static int can_use_fast_range_copy(const cisv_config *config, const cli_context *ctx, int parallel) {
+    if (!config || !ctx || parallel) return 0;
+    if (config->from_line <= 1 && config->to_line == 0) return 0;
+    if (ctx->no_header || ctx->head != 0 || ctx->tail != 0) return 0;
+    if (ctx->select_count > 0 || (ctx->select_names && ctx->select_name_count > 0)) return 0;
+    if (ctx->output_mode != 0 || ctx->where_enabled) return 0;
+    if (getenv("CISV_STATS") != NULL) return 0;
+
+    if (config->escape != '\0' || config->trim || config->skip_empty_lines ||
+        config->comment != '\0' || config->relaxed || config->skip_lines_with_error) {
+        return 0;
+    }
+    if (config->max_row_size > 0) return 0;
+    if (getenv("CISV_MAX_ROW_SIZE") || getenv("CISV_MAX_MEMORY") || getenv("GOMEMLIMIT")) return 0;
+
+    return 1;
+}
+
+static int copy_range_file_fast(const char *filename, cisv_config *config, cli_context *ctx) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return CLI_FAST_ERROR;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        perror("fstat");
+        close(fd);
+        return CLI_FAST_ERROR;
+    }
+
+    if (st.st_size == 0) {
+        close(fd);
+        return CLI_FAST_DONE;
+    }
+
+    uint8_t *base = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) {
+        perror("mmap");
+        return CLI_FAST_ERROR;
+    }
+
+    const size_t size = (size_t)st.st_size;
+    const size_t from_line = config->from_line > 1 ? (size_t)config->from_line : 1;
+    const size_t to_line = config->to_line > 0 ? (size_t)config->to_line : SIZE_MAX;
+    const uint8_t quote = (uint8_t)config->quote;
+    size_t row_start = 0;
+    size_t row_num = 1;
+    size_t selected_start = 0;
+    size_t selected_end = 0;
+    int have_selected = 0;
+    int normalize_eol = 0;
+    int result = CLI_FAST_DONE;
+
+    if (to_line < from_line) goto done;
+
+    for (size_t i = 0; i < size;) {
+        uint8_t c = base[i];
+        if (c == quote) {
+            result = CLI_FAST_FALLBACK;
+            goto done;
+        }
+
+        if (c != '\n' && c != '\r') {
+            i++;
+            continue;
+        }
+
+        size_t row_end = i + 1;
+        if (c == '\r') {
+            normalize_eol = 1;
+            if (row_end < size && base[row_end] == '\n') row_end++;
+        }
+
+        if (row_num >= from_line && row_num <= to_line) {
+            if (!have_selected) {
+                selected_start = row_start;
+                have_selected = 1;
+            }
+            selected_end = row_end;
+        }
+
+        row_num++;
+        i = row_end;
+        row_start = i;
+
+        if (row_num > to_line) break;
+    }
+
+    if (row_start < size && row_num >= from_line && row_num <= to_line) {
+        for (size_t i = row_start; i < size; i++) {
+            if (base[i] == quote) {
+                result = CLI_FAST_FALLBACK;
+                goto done;
+            }
+            if (base[i] == '\r') normalize_eol = 1;
+        }
+        if (!have_selected) {
+            selected_start = row_start;
+            have_selected = 1;
+        }
+        selected_end = size;
+    }
+
+    if (have_selected) {
+        if (normalize_eol) {
+            if (cli_csv_output_lf_normalized_region(ctx, base, selected_start, selected_end) != 0) {
+                result = CLI_FAST_ERROR;
+                goto done;
+            }
+        } else {
+            if (cli_csv_output_append(ctx, (const char *)(base + selected_start),
+                                      selected_end - selected_start) != 0) {
+                result = CLI_FAST_ERROR;
+                goto done;
+            }
+            if (selected_end > selected_start && base[selected_end - 1] != '\n') {
                 if (cli_csv_output_char(ctx, '\n') != 0) {
                     result = CLI_FAST_ERROR;
                     goto done;
@@ -2746,6 +2916,16 @@ int main(int argc, char *argv[]) {
             return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
         if (tail_result == CLI_FAST_DONE) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
+        }
+    }
+
+    if (can_use_fast_range_copy(&config, &ctx, parallel)) {
+        int range_result = copy_range_file_fast(filename, &config, &ctx);
+        if (range_result == CLI_FAST_ERROR) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
+        }
+        if (range_result == CLI_FAST_DONE) {
             return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
         }
     }

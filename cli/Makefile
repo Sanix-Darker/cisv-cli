@@ -257,6 +257,12 @@ test: $(CLI_BIN)
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test_count_empty.csv)" = "0"
 	@printf 'a\nb\nc\nd\n' > /tmp/test_count_range.csv
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --from-line 2 --to-line 3 /tmp/test_count_range.csv)" = "2"
+	@printf 'b\nc\n' > /tmp/test_range.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --from-line 2 --to-line 3 /tmp/test_count_range.csv > /tmp/test_range.out
+	@cmp -s /tmp/test_range.expected /tmp/test_range.out
+	@printf 'a\rb\rc\rd\r' > /tmp/test_range_cr_only.csv
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --from-line 2 --to-line 3 /tmp/test_range_cr_only.csv > /tmp/test_range_cr_only.out
+	@cmp -s /tmp/test_range.expected /tmp/test_range_cr_only.out
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --no-header /tmp/test.csv)" = "2"
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --where 'a==1' /tmp/test.csv)" = "1"
 	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count --no-header --where '0>1' /tmp/test.csv)" = "1"
@@ -293,7 +299,7 @@ test: $(CLI_BIN)
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_select_unquoted_quote.err /tmp/test_unquoted_quote.out /tmp/test_unquoted_quote.err /tmp/test_select_unquoted_quote_relaxed.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err /tmp/test_bad_iterator_quote.out /tmp/test_bad_iterator_quote.err /tmp/test_unterminated_iterator_quote.csv /tmp/test_unterminated_iterator_quote.out /tmp/test_unterminated_iterator_quote.err
 	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_cr_only.csv /tmp/test_cr_only.expected /tmp/test_cr_only.out /tmp/test_select_cr_only.expected /tmp/test_select_cr_only.out /tmp/test_count_semantics.csv
-	@rm -f /tmp/test_count_no_newline.csv /tmp/test_count_empty.csv /tmp/test_count_range.csv /tmp/test_count_select_name_missing.out /tmp/test_count_select_name_missing.err
+	@rm -f /tmp/test_count_no_newline.csv /tmp/test_count_empty.csv /tmp/test_count_range.csv /tmp/test_range.expected /tmp/test_range.out /tmp/test_range_cr_only.csv /tmp/test_range_cr_only.out /tmp/test_count_select_name_missing.out /tmp/test_count_select_name_missing.err
 	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
 	@rm -f /tmp/test_bad_delimiter.out /tmp/test_bad_delimiter.err /tmp/test_bad_quote.out /tmp/test_bad_quote.err
 	@rm -f /tmp/test_bad_escape.out /tmp/test_bad_escape.err /tmp/test_bad_comment.out /tmp/test_bad_comment.err /tmp/test_bad_escape_quote.out /tmp/test_bad_escape_quote.err
