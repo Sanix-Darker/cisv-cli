@@ -288,6 +288,10 @@ typedef struct {
     int quiet;
 } cli_count_context;
 
+#define CLI_FAST_ERROR (-1)
+#define CLI_FAST_DONE 0
+#define CLI_FAST_FALLBACK 1
+
 static int prepare_header_state(cli_context *ctx,
                                 const char *const *row,
                                 const size_t *lengths,
@@ -1015,6 +1019,177 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
 
 done:
     munmap(base, (size_t)st.st_size);
+    return result;
+}
+
+static int can_use_fast_head_copy(const cisv_config *config, const cli_context *ctx, int parallel) {
+    if (!config || !ctx || parallel) return 0;
+    if (ctx->head <= 0 || ctx->tail != 0) return 0;
+    if (ctx->select_count > 0 || (ctx->select_names && ctx->select_name_count > 0)) return 0;
+    if (ctx->output_mode != 0 || ctx->where_enabled) return 0;
+    if (getenv("CISV_STATS") != NULL) return 0;
+
+    if (config->escape != '\0' || config->trim || config->skip_empty_lines ||
+        config->comment != '\0' || config->relaxed || config->skip_lines_with_error) {
+        return 0;
+    }
+    if (config->from_line > 1 || config->to_line > 0 || config->max_row_size > 0) return 0;
+    if (getenv("CISV_MAX_ROW_SIZE") || getenv("CISV_MAX_MEMORY") || getenv("GOMEMLIMIT")) return 0;
+
+    return 1;
+}
+
+static int cli_csv_output_lf_normalized_region(cli_context *ctx,
+                                               const uint8_t *base,
+                                               size_t start,
+                                               size_t end) {
+    const uint8_t *p = base + start;
+    const uint8_t *limit = base + end;
+    const uint8_t *segment = p;
+
+    while (p < limit) {
+        if (*p == '\r') {
+            if (cli_csv_output_append(ctx, (const char *)segment, (size_t)(p - segment)) != 0) return -1;
+            if (cli_csv_output_char(ctx, '\n') != 0) return -1;
+            p++;
+            if (p < limit && *p == '\n') p++;
+            segment = p;
+            continue;
+        }
+        if (*p == '\n') {
+            p++;
+            if (cli_csv_output_append(ctx, (const char *)segment, (size_t)(p - segment)) != 0) return -1;
+            segment = p;
+            continue;
+        }
+        p++;
+    }
+
+    if (segment < limit) {
+        if (cli_csv_output_append(ctx, (const char *)segment, (size_t)(limit - segment)) != 0) return -1;
+        if (cli_csv_output_char(ctx, '\n') != 0) return -1;
+    }
+
+    return 0;
+}
+
+static int copy_head_file_fast(const char *filename, cisv_config *config, cli_context *ctx) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return CLI_FAST_ERROR;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        perror("fstat");
+        close(fd);
+        return CLI_FAST_ERROR;
+    }
+
+    if (st.st_size == 0 || ctx->head <= 0) {
+        close(fd);
+        return CLI_FAST_DONE;
+    }
+
+    uint8_t *base = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) {
+        perror("mmap");
+        return CLI_FAST_ERROR;
+    }
+
+    const size_t size = (size_t)st.st_size;
+    const size_t wanted_rows = (size_t)ctx->head;
+    const uint8_t quote = (uint8_t)config->quote;
+    size_t row_start = 0;
+    size_t row_num = 0;
+    size_t emitted = 0;
+    size_t selected_start = 0;
+    size_t selected_end = 0;
+    int have_selected = 0;
+    int normalize_eol = 0;
+    int result = CLI_FAST_DONE;
+
+    for (size_t i = 0; i < size;) {
+        uint8_t c = base[i];
+        if (c == quote) {
+            result = CLI_FAST_FALLBACK;
+            goto done;
+        }
+
+        if (c != '\n' && c != '\r') {
+            i++;
+            continue;
+        }
+
+        size_t row_end = i + 1;
+        if (c == '\r') {
+            normalize_eol = 1;
+            if (row_end < size && base[row_end] == '\n') row_end++;
+        }
+
+        if (!(ctx->no_header && row_num == 0) && emitted < wanted_rows) {
+            if (!have_selected) {
+                selected_start = row_start;
+                have_selected = 1;
+            }
+            selected_end = row_end;
+            emitted++;
+        }
+
+        row_num++;
+        i = row_end;
+        row_start = i;
+
+        if (emitted >= wanted_rows) break;
+    }
+
+    if (emitted < wanted_rows && row_start < size) {
+        for (size_t i = row_start; i < size; i++) {
+            if (base[i] == quote) {
+                result = CLI_FAST_FALLBACK;
+                goto done;
+            }
+            if (base[i] == '\r') normalize_eol = 1;
+        }
+
+        if (!(ctx->no_header && row_num == 0)) {
+            if (!have_selected) {
+                selected_start = row_start;
+                have_selected = 1;
+            }
+            selected_end = size;
+            emitted++;
+        }
+    }
+
+    if (have_selected) {
+        if (normalize_eol) {
+            if (cli_csv_output_lf_normalized_region(ctx, base, selected_start, selected_end) != 0) {
+                result = CLI_FAST_ERROR;
+                goto done;
+            }
+        } else {
+            if (cli_csv_output_append(ctx, (const char *)(base + selected_start),
+                                      selected_end - selected_start) != 0) {
+                result = CLI_FAST_ERROR;
+                goto done;
+            }
+            if (selected_end > selected_start && base[selected_end - 1] != '\n') {
+                if (cli_csv_output_char(ctx, '\n') != 0) {
+                    result = CLI_FAST_ERROR;
+                    goto done;
+                }
+            }
+        }
+        ctx->row_count += emitted;
+    }
+
+    if (cli_csv_output_flush(ctx) != 0) result = CLI_FAST_ERROR;
+
+done:
+    munmap(base, size);
     return result;
 }
 
@@ -2320,6 +2495,16 @@ int main(int argc, char *argv[]) {
         }
     }
     setvbuf(ctx.output, NULL, _IOFBF, 1 << 20);
+
+    if (can_use_fast_head_copy(&config, &ctx, parallel)) {
+        int head_result = copy_head_file_fast(filename, &config, &ctx);
+        if (head_result == CLI_FAST_ERROR) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
+        }
+        if (head_result == CLI_FAST_DONE) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
+        }
+    }
 
     if (can_use_fast_select_projector(&config, &ctx, parallel)) {
         int project_result = project_select_file_fast(filename, &config, &ctx);
