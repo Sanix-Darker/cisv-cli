@@ -654,6 +654,14 @@ main() {
         run_benchmark "xan" "xan select 0,2,3 \"$filepath\" | wc -l" "select"
     fi
 
+    # Header-name selection, same semantic output as numeric select on generated fixtures.
+    if [ -n "$CISV_BIN" ]; then
+        run_benchmark "cisv" "$CISV_BIN --select-name col0,col2,col3 \"$filepath\" | wc -l" "select-name"
+    fi
+    if command_exists xan; then
+        run_benchmark "xan" "xan select col0,col2,col3 \"$filepath\" | wc -l" "select-name"
+    fi
+
     # qsv select (1-indexed)
     if command_exists qsv; then
         run_benchmark "qsv" "qsv select 1,3,4 \"$filepath\" | wc -l" "select"
@@ -710,6 +718,7 @@ main() {
 
     # Print column selection results
     print_results_table "select" "$file_size" "$row_count"
+    print_results_table "select-name" "$file_size" "$row_count"
 
     # ========================================================================
     # ROW SLICING BENCHMARKS

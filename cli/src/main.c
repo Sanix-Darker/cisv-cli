@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <signal.h>
 
 #if defined(__AVX2__) || defined(__SSE2__)
 #include <immintrin.h>
@@ -277,6 +278,7 @@ typedef struct {
     char *csv_output_buffer;
     size_t csv_output_buffer_pos;
     size_t csv_output_buffer_size;
+    int broken_pipe;
 
     cisv_config *config;
 } cli_context;
@@ -726,6 +728,7 @@ static int ensure_csv_writer(cli_context *ctx) {
 static int cli_csv_output_flush(cli_context *ctx) {
     if (!ctx || !ctx->output || ctx->csv_output_buffer_pos == 0) return 0;
     if (fwrite(ctx->csv_output_buffer, 1, ctx->csv_output_buffer_pos, ctx->output) != ctx->csv_output_buffer_pos) {
+        if (errno == EPIPE) ctx->broken_pipe = 1;
         return -1;
     }
     ctx->csv_output_buffer_pos = 0;
@@ -744,7 +747,9 @@ static int cli_csv_output_append(cli_context *ctx, const char *data, size_t len)
 
     if (len > ctx->csv_output_buffer_size) {
         if (cli_csv_output_flush(ctx) != 0) return -1;
-        return fwrite(data, 1, len, ctx->output) == len ? 0 : -1;
+        if (fwrite(data, 1, len, ctx->output) == len) return 0;
+        if (errno == EPIPE) ctx->broken_pipe = 1;
+        return -1;
     }
 
     if (ctx->csv_output_buffer_pos + len > ctx->csv_output_buffer_size) {
@@ -880,7 +885,8 @@ static int cli_csv_output_raw_or_quote(
 
 static int can_use_fast_select_projector(const cisv_config *config, const cli_context *ctx, int parallel) {
     if (!config || !ctx || parallel) return 0;
-    if (ctx->select_count <= 0 || (ctx->select_names && ctx->select_name_count > 0)) return 0;
+    if (ctx->select_count <= 0) return 0;
+    if (ctx->select_names && ctx->select_name_count > 0 && !ctx->select_names_resolved) return 0;
     if (ctx->output_mode != 0 || ctx->where_enabled || ctx->head != 0 || ctx->tail != 0) return 0;
     if (getenv("CISV_STATS") != NULL) return 0;
 
@@ -1776,7 +1782,9 @@ static int process_row_for_cli(cli_context *ctx, const char *const *row, const s
         ctx->tail_pos = (ctx->tail_pos + 1) % ctx->tail;
     } else {
         if (output_row(ctx, row, lengths, field_count) != 0) {
-            fprintf(stderr, "Failed writing output row\n");
+            if (!ctx->broken_pipe) {
+                fprintf(stderr, "Failed writing output row\n");
+            }
             return -1;
         }
         ctx->row_count++;
@@ -2434,6 +2442,10 @@ static int finish_cli(cli_context *ctx,
                       const char *output_tmp_path,
                       const char *output_file,
                       int success) {
+    if (!success && ctx && ctx->broken_pipe && (!output_file || output_file[0] == '\0')) {
+        success = 1;
+    }
+
     int finalize_rc = finalize_atomic_output_file(
         ctx,
         output_tmp_path,
@@ -2451,6 +2463,8 @@ static int finish_cli(cli_context *ctx,
 }
 
 int main(int argc, char *argv[]) {
+    signal(SIGPIPE, SIG_IGN);
+
     if (argc > 1 && strcmp(argv[1], "write") == 0) {
         return cisv_writer_main(argc - 1, argv + 1);
     }
@@ -2927,6 +2941,12 @@ int main(int argc, char *argv[]) {
         }
         if (range_result == CLI_FAST_DONE) {
             return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 1);
+        }
+    }
+
+    if (ctx.select_names && ctx.select_name_count > 0 && !ctx.select_names_resolved) {
+        if (validate_count_header_names(filename, &config, &ctx) != 0) {
+            return finish_cli(&ctx, stdin_tmp_path, output_tmp_path, output_file, 0);
         }
     }
 

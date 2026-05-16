@@ -155,6 +155,8 @@ test: $(CLI_BIN)
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select-name a,c /tmp/test.csv > /tmp/test_select_name.out
 	@grep -q '^a,c$$' /tmp/test_select_name.out
 	@grep -q '^1,3$$' /tmp/test_select_name.out
+	@bash -o pipefail -c 'env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select-name a,c /tmp/test.csv | head -1 >/tmp/test_select_name_pipe.out'
+	@grep -q '^a,c$$' /tmp/test_select_name_pipe.out
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select-name missing /tmp/test.csv >/tmp/test_select_name_missing.out 2>/tmp/test_select_name_missing.err
 	@grep -q 'Missing selected column: missing' /tmp/test_select_name_missing.err
 	@printf 'existing\n' > /tmp/test_atomic_existing.out
@@ -292,7 +294,7 @@ test: $(CLI_BIN)
 	@grep -q 'CISV_PARALLEL_MIN_BYTES' /tmp/test_env_bad_parallel_min.err
 	@test "$$(env GOMEMLIMIT=nope LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory 1MiB --count /tmp/test.csv)" = "3"
 	@rm /tmp/test.csv
-	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
+	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_pipe.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
 	@rm -f /tmp/test_head.expected /tmp/test_head.out /tmp/test_head_no_header.expected /tmp/test_head_no_header.out /tmp/test_head_cr_only.csv /tmp/test_head_cr_only.expected /tmp/test_head_cr_only.out /tmp/test_head_multiline.expected /tmp/test_head_multiline.out
 	@rm -f /tmp/test_tail.expected /tmp/test_tail.out /tmp/test_tail_no_header.out /tmp/test_tail_cr_only.csv /tmp/test_tail_cr_only.expected /tmp/test_tail_cr_only.out /tmp/test_tail_multiline.expected /tmp/test_tail_multiline.out
 	@rmdir /tmp/test_cisv_stdin_tmp
