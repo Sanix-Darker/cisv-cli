@@ -1,6 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Base dependencies
 RUN apt-get update && apt-get install -y \
@@ -13,6 +14,13 @@ RUN pip3 install --no-cache-dir csvkit
 
 # Install xsv from source using distro cargo/rustc.
 RUN cargo install xsv
+
+# Install xan, the modern Rust CSV CLI used by the benchmark comparator.
+RUN wget -qO /tmp/xan.tar.gz https://github.com/medialab/xan/releases/download/0.57.1/xan-x86_64-unknown-linux-musl.tar.gz \
+    && echo "2651285cc04d859c0a19dd2a190e2f2223b3e2659bcd82f90d87c4f2422a9943  /tmp/xan.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/xan.tar.gz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/xan \
+    && rm /tmp/xan.tar.gz
 
 # Install qsv (prebuilt musl binary - statically linked, no external deps)
 RUN wget -qO /tmp/qsv.zip https://github.com/dathere/qsv/releases/download/14.0.0/qsv-14.0.0-x86_64-unknown-linux-musl.zip \
