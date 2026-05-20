@@ -20,6 +20,7 @@ ITERATIONS=3
 ROOT="/tmp/cisv_merge_benchmark"
 ROWS_PER_FILE=250000
 FAST=false
+COMPACT=false
 
 show_help() {
     cat <<EOF
@@ -31,6 +32,7 @@ Options:
   --iterations=N      Iterations per command (default: 3)
   --tmp-dir=DIR       Fixture/output directory (default: /tmp/cisv_merge_benchmark)
   --rows-per-file=N   Rows per source file (default: 250000; exact validation expects 250000)
+  --compact           Generate narrow rows for 10M+ row scaling checks
   --fast              Skip non-cisv comparators
   --help              Show this help
 
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --iterations=*) ITERATIONS="${1#*=}"; shift ;;
         --tmp-dir=*) ROOT="${1#*=}"; shift ;;
         --rows-per-file=*) ROWS_PER_FILE="${1#*=}"; shift ;;
+        --compact) COMPACT=true; shift ;;
         --fast) FAST=true; shift ;;
         --help|-h) show_help; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -74,14 +77,18 @@ generate_fixture() {
 from pathlib import Path
 root = Path("$ROOT")
 rows = int("$ROWS_PER_FILE")
-cols = ["Id", "Name", "Email", "Status", "Amount", "UpdatedAt", "Payload"]
+compact = "$COMPACT" == "true"
+cols = ["Id", "V"] if compact else ["Id", "Name", "Email", "Status", "Amount", "UpdatedAt", "Payload"]
 
 def write_source(name, start):
     end = start + rows - 1
     with (root / name).open("w", newline="") as f:
         f.write(",".join(cols) + "\\n")
         for i in range(start, end + 1):
-            f.write(f"{i},name_{i},user{i}@example.com,active,{i % 10000},2026-05-20T00:00:00Z,payload_{i}\\n")
+            if compact:
+                f.write(f"{i},x{i}\\n")
+            else:
+                f.write(f"{i},name_{i},user{i}@example.com,active,{i % 10000},2026-05-20T00:00:00Z,payload_{i}\\n")
 
 write_source("newest.csv", 125001)
 write_source("middle.csv", 62501)
@@ -125,11 +132,14 @@ validate_cisv_stats() {
     python3 <<PY
 import json
 from pathlib import Path
+rows = int("$ROWS_PER_FILE")
+if rows < 250000:
+    raise SystemExit("exact merge validation requires --rows-per-file >= 250000")
 stats = json.loads(Path("$stats").read_text())
 expected = {
-    "input_rows": 750000,
-    "output_rows": 350000,
-    "duplicate_rows": 325000,
+    "input_rows": rows * 3,
+    "output_rows": rows + 100000,
+    "duplicate_rows": (rows * 2) - 175000,
     "excluded_rows": 75000,
 }
 for key, value in expected.items():
@@ -159,6 +169,7 @@ echo "CISV Merge Rows Benchmark"
 echo "============================================================"
 echo "Fixture dir: $ROOT"
 echo "Rows per source: $ROWS_PER_FILE"
+echo "Compact rows: $COMPACT"
 echo "Source bytes: $SOURCE_BYTES"
 echo "Iterations: $ITERATIONS"
 echo "cisv: $($CISV_BIN --version | head -n 1)"
