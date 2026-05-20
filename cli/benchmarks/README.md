@@ -63,6 +63,9 @@ docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --iterations=1
 
 # Skip extra generated count fixtures when you only need the simple CSV suite
 docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --no-count-variants
+
+# Native merge/dedup/delete benchmark with exact LDV-shaped counters
+docker run --cpus=2 --memory=4g --rm --entrypoint /benchmark/run_merge_benchmark.sh cisv-cli-bench --iterations=3
 ```
 
 ### Command-line options
@@ -80,6 +83,14 @@ docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --no-count-var
 
 The default generated run benchmarks simple count/select/slicing plus focused count
 fixtures for quoted multiline rows, comment skipping, and skip-empty semantics.
+
+The merge benchmark generates three 250k-row source files plus a 25k-key delete
+file. Expected results are 750k source rows, 350k output rows, 325k duplicate
+rows, and 75k excluded rows. It compares:
+
+- `cisv merge rows` in in-memory mode
+- `cisv merge rows --external --memory-limit 64MiB`
+- `xan cat rows | xan join --anti | xan dedup` when `xan` is installed
 
 ## Tool Categories
 
@@ -183,6 +194,17 @@ Tests how fast each tool can extract specific columns.
 | awk | `awk -F',' '{print $1,$3,$4}' file.csv` | 1-indexed |
 | csvkit | `csvcut -c 1,3,4 file.csv` | 1-indexed |
 
+### Row Merge / Dedup / Exclude
+
+Tests the single-process merge primitive used by PHP orchestration for large
+dedup/delete workloads.
+
+| Tool | Command | Notes |
+|------|---------|-------|
+| cisv | `cisv merge rows newest.csv middle.csv oldest.csv --dedup-key Id --exclude-keys deleted.csv:Id` | One process, exclusion before dedup |
+| cisv external | same with `--external --memory-limit 64MiB` | Disk-backed key partitioning |
+| xan | `xan cat rows ... | xan join --anti Id - Id deleted.csv | xan dedup -s Id` | Equivalent safe pipeline |
+
 ## Tool Installation
 
 The Docker image installs all tools automatically. For local installation:
@@ -209,6 +231,9 @@ make core cli
 
 # Run benchmark
 ./cli/benchmarks/run_benchmark.sh --rows=100000 --fast
+
+# Run the merge benchmark
+./cli/benchmarks/run_merge_benchmark.sh --iterations=3
 ```
 
 ## Resource Isolation

@@ -8,6 +8,8 @@ CLI distribution for CISV.
 
 - Fast CSV parsing/counting from shell
 - Column selection and ranged reads
+- Native row concatenation, deduplication, exclusion, and merge primitives
+- Machine-readable merge/dedup stats JSON for orchestration
 - Benchmark mode and writer subcommand
 - Same parser core as `cisv-core`
 - Ships a man page (`man cisv`)
@@ -93,6 +95,20 @@ Key options:
 - `--strict`: explicit strict parse mode (default)
 - `--json`, `--jsonl`: machine-readable output
 
+Row operation commands:
+
+- `cisv cat rows file1.csv file2.csv`: concatenate rows with one header
+- `cisv dedup INPUT.csv --key Id`: deduplicate rows by one or more key columns
+- `cisv filter exclude SOURCE.csv --key Id --keys-file deleted.csv --keys-file-key Id`: anti-join by key
+- `cisv merge rows newest.csv middle.csv oldest.csv --dedup-key Id --exclude-keys deleted.csv:Id`: concatenate, exclude deleted keys, and deduplicate in one process
+
+Row operation controls:
+
+- `--keep first|last`: keep first row by key by default; `last` stores final survivors
+- `--stats-json FILE`: write counters and timings
+- `--memory-limit SIZE`: soft in-memory budget
+- `--external --tmp-dir DIR`: partitioned disk-backed mode for larger-than-RAM key sets
+
 Runtime resource controls:
 
 - `CISV_MAX_PROCS` or `GOMAXPROCS`: maximum CISV worker threads/cores
@@ -116,6 +132,9 @@ cat examples/sample.csv | ./cli/build/cisv --no-header -
 ./cli/build/cisv --parallel --threads 4 examples/sample.csv
 ./cli/build/cisv --max-procs 1 --max-memory 512MiB -c examples/sample.csv
 ./cli/build/cisv --json examples/sample.csv
+./cli/build/cisv merge rows newest.csv middle.csv oldest.csv --dedup-key Id --exclude-keys deleted.csv:Id -o merged.csv --stats-json merged.stats.json
+./cli/build/cisv dedup data.csv --key Id --keep last
+./cli/build/cisv filter exclude data.csv --key Id --keys-file deleted.csv --keys-file-key Id
 ```
 
 ### DETAILED
@@ -132,6 +151,7 @@ More runnable scripts: [`examples/`](./examples)
 ```bash
 docker build -t cisv-cli-bench -f cli/benchmarks/Dockerfile .
 docker run --rm --platform linux/amd64 --cpus=2 --memory=4g cisv-cli-bench
+docker run --rm --platform linux/amd64 --cpus=2 --memory=4g --entrypoint /benchmark/run_merge_benchmark.sh cisv-cli-bench --iterations=3
 ```
 
 ![CLI Benchmarks](./assets/benchmark-cli.png)

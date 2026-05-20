@@ -165,6 +165,35 @@ test: $(CLI_BIN)
 	@test -z "$$(ls /tmp/test_atomic_existing.out.tmp.* 2>/dev/null)"
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) -o /tmp/test_atomic_success.out /tmp/test.csv
 	@grep -q '^a,b,c$$' /tmp/test_atomic_success.out
+	@printf 'Id,Name\n2,new\n3,keep\n4,del\n' > /tmp/test_merge_newest.csv
+	@printf 'Id,Name\n1,mid1\n2,dup\n4,del2\n' > /tmp/test_merge_middle.csv
+	@printf 'Id,Name\n1,dupold\n5,old\n' > /tmp/test_merge_oldest.csv
+	@printf 'Id\n4\n' > /tmp/test_merge_deleted.csv
+	@printf 'Id,Name\n2,new\n3,keep\n1,mid1\n5,old\n' > /tmp/test_merge.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) merge rows /tmp/test_merge_newest.csv /tmp/test_merge_middle.csv /tmp/test_merge_oldest.csv --dedup-key Id --exclude-keys /tmp/test_merge_deleted.csv:Id -o /tmp/test_merge.out --stats-json /tmp/test_merge.stats.json
+	@cmp -s /tmp/test_merge.expected /tmp/test_merge.out
+	@grep -q '"output_rows": 4' /tmp/test_merge.stats.json
+	@grep -q '"duplicate_rows": 2' /tmp/test_merge.stats.json
+	@grep -q '"excluded_rows": 2' /tmp/test_merge.stats.json
+	@mkdir -p /tmp/test_cisv_merge_external_tmp
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) merge rows /tmp/test_merge_newest.csv /tmp/test_merge_middle.csv /tmp/test_merge_oldest.csv --dedup-key Id --exclude-keys /tmp/test_merge_deleted.csv:Id --external --memory-limit 1MiB --tmp-dir /tmp/test_cisv_merge_external_tmp -o /tmp/test_merge_external.out --stats-json /tmp/test_merge_external.stats.json
+	@cmp -s /tmp/test_merge.expected /tmp/test_merge_external.out
+	@grep -q '"mode": "external"' /tmp/test_merge_external.stats.json
+	@test -z "$$(ls -A /tmp/test_cisv_merge_external_tmp)"
+	@printf 'Id,V\n1,a\n2,b\n1,c\n' > /tmp/test_dedup_last.csv
+	@printf 'Id,V\n2,b\n1,c\n' > /tmp/test_dedup_last.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) dedup /tmp/test_dedup_last.csv --key Id --keep last > /tmp/test_dedup_last.out
+	@cmp -s /tmp/test_dedup_last.expected /tmp/test_dedup_last.out
+	@printf 'Id,V\n1,a\n2,b\n3,c\n' > /tmp/test_filter_source.csv
+	@printf 'Id\n2\n' > /tmp/test_filter_deleted.csv
+	@printf 'Id,V\n1,a\n3,c\n' > /tmp/test_filter.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) filter exclude /tmp/test_filter_source.csv --key Id --keys-file /tmp/test_filter_deleted.csv --keys-file-key Id > /tmp/test_filter.out
+	@cmp -s /tmp/test_filter.expected /tmp/test_filter.out
+	@printf 'a,b\n1,2\n' > /tmp/test_cat_a.csv
+	@printf 'a,b\n3,4\n' > /tmp/test_cat_b.csv
+	@printf 'a,b\n1,2\n3,4\n' > /tmp/test_cat.expected
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) cat rows /tmp/test_cat_a.csv /tmp/test_cat_b.csv > /tmp/test_cat.out
+	@cmp -s /tmp/test_cat.expected /tmp/test_cat.out
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --where 'a==1' /tmp/test.csv > /tmp/test_where.out
 	@grep -q '^1,2,3$$' /tmp/test_where.out
 	@! grep -q '^4,5,6$$' /tmp/test_where.out
@@ -295,9 +324,12 @@ test: $(CLI_BIN)
 	@test "$$(env GOMEMLIMIT=nope LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --max-memory 1MiB --count /tmp/test.csv)" = "3"
 	@rm /tmp/test.csv
 	@rm -f /tmp/test_no_header.out /tmp/test_stdin.out /tmp/test_stdin_no_header.out /tmp/test_stdin_tmp_success.out /tmp/test_stdin_tmp_fail.out /tmp/test_stdin_tmp_fail.err /tmp/test_select_name.out /tmp/test_select_name_pipe.out /tmp/test_select_name_missing.out /tmp/test_select_name_missing.err /tmp/test_atomic_existing.out /tmp/test_atomic_existing.out.tmp.* /tmp/test_atomic_fail.stdout /tmp/test_atomic_fail.err /tmp/test_atomic_success.out /tmp/test_atomic_success.out.tmp.* /tmp/test_where.out /tmp/test_json.out /tmp/test_json_head.out /tmp/test_json_no_header.out /tmp/test_jsonl.out /tmp/test_json_nul.csv /tmp/test_json_nul.out /tmp/test_where_contains.out /tmp/test_where_head.out /tmp/test_where_tail.out
+	@rm -f /tmp/test_merge_newest.csv /tmp/test_merge_middle.csv /tmp/test_merge_oldest.csv /tmp/test_merge_deleted.csv /tmp/test_merge.expected /tmp/test_merge.out /tmp/test_merge.stats.json /tmp/test_merge_external.out /tmp/test_merge_external.stats.json
+	@rm -f /tmp/test_dedup_last.csv /tmp/test_dedup_last.expected /tmp/test_dedup_last.out /tmp/test_filter_source.csv /tmp/test_filter_deleted.csv /tmp/test_filter.expected /tmp/test_filter.out /tmp/test_cat_a.csv /tmp/test_cat_b.csv /tmp/test_cat.expected /tmp/test_cat.out
 	@rm -f /tmp/test_head.expected /tmp/test_head.out /tmp/test_head_no_header.expected /tmp/test_head_no_header.out /tmp/test_head_cr_only.csv /tmp/test_head_cr_only.expected /tmp/test_head_cr_only.out /tmp/test_head_multiline.expected /tmp/test_head_multiline.out
 	@rm -f /tmp/test_tail.expected /tmp/test_tail.out /tmp/test_tail_no_header.out /tmp/test_tail_cr_only.csv /tmp/test_tail_cr_only.expected /tmp/test_tail_cr_only.out /tmp/test_tail_multiline.expected /tmp/test_tail_multiline.out
 	@rmdir /tmp/test_cisv_stdin_tmp
+	@rmdir /tmp/test_cisv_merge_external_tmp
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_select_unquoted_quote.err /tmp/test_unquoted_quote.out /tmp/test_unquoted_quote.err /tmp/test_select_unquoted_quote_relaxed.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err /tmp/test_bad_iterator_quote.out /tmp/test_bad_iterator_quote.err /tmp/test_unterminated_iterator_quote.csv /tmp/test_unterminated_iterator_quote.out /tmp/test_unterminated_iterator_quote.err
 	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_cr_only.csv /tmp/test_cr_only.expected /tmp/test_cr_only.out /tmp/test_select_cr_only.expected /tmp/test_select_cr_only.out /tmp/test_count_semantics.csv

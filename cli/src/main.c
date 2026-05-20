@@ -20,6 +20,7 @@
 
 #include "cisv/parser.h"
 #include "cisv/writer.h"
+#include "cisv/operations.h"
 
 #ifndef CISV_CLI_VERSION
 #define CISV_CLI_VERSION "dev"
@@ -1799,7 +1800,11 @@ static void print_help(const char *prog) {
     printf("Usage: %s [COMMAND] [OPTIONS] [FILE]\n\n", prog);
     printf("Commands:\n");
     printf("  parse    Parse CSV file (default if no command given)\n");
-    printf("  write    Write/generate CSV files\n\n");
+    printf("  write    Write/generate CSV files\n");
+    printf("  dedup    Deduplicate rows by key columns\n");
+    printf("  filter   Filter rows, including key exclusion\n");
+    printf("  cat      Concatenate CSV files by rows\n");
+    printf("  merge    Merge rows with exclusion and deduplication\n\n");
     printf("Options:\n");
     printf("  -h, --help              Show this help message\n");
     printf("  -v, --version           Show version information\n");
@@ -2462,8 +2467,481 @@ static int finish_cli(cli_context *ctx,
     return (success && finalize_rc == 0) ? 0 : 1;
 }
 
+typedef struct {
+    const char **items;
+    size_t count;
+    size_t cap;
+} cli_string_list;
+
+typedef struct {
+    size_t *items;
+    size_t count;
+    size_t cap;
+} cli_index_list;
+
+static void cli_string_list_free(cli_string_list *list) {
+    free(list ? list->items : NULL);
+    if (list) memset(list, 0, sizeof(*list));
+}
+
+static void cli_index_list_free(cli_index_list *list) {
+    free(list ? list->items : NULL);
+    if (list) memset(list, 0, sizeof(*list));
+}
+
+static int cli_string_list_append(cli_string_list *list, const char *value) {
+    if (!list || !value) return -1;
+    if (list->count == list->cap) {
+        size_t new_cap = list->cap ? list->cap * 2 : 4;
+        const char **new_items = realloc(list->items, new_cap * sizeof(char *));
+        if (!new_items) return -1;
+        list->items = new_items;
+        list->cap = new_cap;
+    }
+    list->items[list->count++] = value;
+    return 0;
+}
+
+static int cli_index_list_append(cli_index_list *list, size_t value) {
+    if (!list) return -1;
+    if (list->count == list->cap) {
+        size_t new_cap = list->cap ? list->cap * 2 : 4;
+        size_t *new_items = realloc(list->items, new_cap * sizeof(size_t));
+        if (!new_items) return -1;
+        list->items = new_items;
+        list->cap = new_cap;
+    }
+    list->items[list->count++] = value;
+    return 0;
+}
+
+static int parse_size_index_option(const char *name, const char *arg, size_t *out) {
+    long value = 0;
+    if (safe_parse_long(arg, &value, 0) != 0) {
+        fprintf(stderr, "Error: Invalid %s '%s'\n", name, arg ? arg : "");
+        return -1;
+    }
+    *out = (size_t)value;
+    return 0;
+}
+
+static int finalize_rows_output_file(FILE **out,
+                                     const char *tmp_path,
+                                     const char *output_file,
+                                     int success) {
+    int close_failed = 0;
+    if (out && *out && *out != stdout) {
+        if (fclose(*out) != 0) {
+            perror("fclose");
+            close_failed = 1;
+        }
+        *out = NULL;
+    }
+
+    if (!output_file || !tmp_path || tmp_path[0] == '\0') {
+        return close_failed ? -1 : 0;
+    }
+
+    if (success && !close_failed) {
+        if (rename(tmp_path, output_file) != 0) {
+            perror("rename");
+            unlink(tmp_path);
+            return -1;
+        }
+        return 0;
+    }
+
+    unlink(tmp_path);
+    return close_failed ? -1 : 0;
+}
+
+static int write_stats_string_array(FILE *f, const char *name, const char **items, size_t count, int comma) {
+    fprintf(f, "  \"%s\": [", name);
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) fputc(',', f);
+        json_write_escaped_len(f, items[i], strlen(items[i]));
+    }
+    fprintf(f, "]%s\n", comma ? "," : "");
+    return ferror(f) ? -1 : 0;
+}
+
+static int write_rows_stats_json(const char *path,
+                                 const cisv_rows_stats_t *stats,
+                                 const cisv_rows_options_t *options,
+                                 const char **source_key_names,
+                                 size_t source_key_name_count) {
+    if (!path || !stats || !options) return 0;
+
+    char tmp_path[PATH_MAX] = {0};
+    FILE *f = NULL;
+    if (open_atomic_output_file(path, tmp_path, sizeof(tmp_path), &f) != 0) {
+        return -1;
+    }
+
+    fputs("{\n", f);
+    fputs("  \"command\": ", f);
+    json_write_escaped_len(f, stats->command, strlen(stats->command));
+    fputs(",\n", f);
+    fputs("  \"version\": ", f);
+    json_write_escaped_len(f, CISV_CLI_VERSION, strlen(CISV_CLI_VERSION));
+    fputs(",\n", f);
+    fprintf(f, "  \"input_files\": %zu,\n", stats->input_files);
+    fprintf(f, "  \"input_rows\": %zu,\n", stats->input_rows);
+    fprintf(f, "  \"output_rows\": %zu,\n", stats->output_rows);
+    fprintf(f, "  \"duplicate_rows\": %zu,\n", stats->duplicate_rows);
+    fprintf(f, "  \"excluded_rows\": %zu,\n", stats->excluded_rows);
+    fprintf(f, "  \"malformed_rows\": %zu,\n", stats->malformed_rows);
+    fprintf(f, "  \"empty_key_rows\": %zu,\n", stats->empty_key_rows);
+    fprintf(f, "  \"header_mismatch_rows\": %zu,\n", stats->header_mismatch_rows);
+    fprintf(f, "  \"elapsed_seconds\": %.9f,\n", stats->elapsed_seconds);
+    fprintf(f, "  \"peak_rss_bytes\": %zu,\n", stats->peak_rss_bytes);
+    fprintf(f, "  \"bytes_read\": %zu,\n", stats->bytes_read);
+    fprintf(f, "  \"bytes_written\": %zu,\n", stats->bytes_written);
+    fprintf(f, "  \"temp_bytes_read\": %zu,\n", stats->temp_bytes_read);
+    fprintf(f, "  \"temp_bytes_written\": %zu,\n", stats->temp_bytes_written);
+    fputs("  \"mode\": ", f);
+    json_write_escaped_len(f, stats->mode, strlen(stats->mode));
+    fputs(",\n", f);
+    if (write_stats_string_array(f, "key_columns", source_key_names, source_key_name_count, 1) != 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+    fputs("  \"keep\": ", f);
+    json_write_escaped_len(f, stats->keep, strlen(stats->keep));
+    fputc('\n', f);
+    fputs("}\n", f);
+
+    if (fclose(f) != 0) {
+        perror("fclose");
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, path) != 0) {
+        perror("rename");
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+static void print_rows_help(const char *prog) {
+    printf("cisv row operations\n\n");
+    printf("Usage:\n");
+    printf("  %s dedup INPUT.csv --key COL [--key COL] [--keep first|last] [-o OUT]\n", prog);
+    printf("  %s filter exclude SOURCE.csv --key COL --keys-file FILE --keys-file-key COL [-o OUT]\n", prog);
+    printf("  %s cat rows file1.csv file2.csv [...] [-o OUT]\n", prog);
+    printf("  %s merge rows file1.csv file2.csv [...] --dedup-key COL --exclude-keys FILE:COL [-o OUT]\n", prog);
+    printf("\nOptions:\n");
+    printf("  --key COL, --dedup-key COL       Key column name; may be repeated\n");
+    printf("  --key-index N                    Zero-based key column index for --no-header\n");
+    printf("  --keep first|last                Dedup policy (default: first)\n");
+    printf("  --keys-file FILE                 Exclusion key CSV for filter exclude\n");
+    printf("  --keys-file-key COL              Exclusion key column name\n");
+    printf("  --exclude-keys FILE:COL          Exclusion key CSV and column for merge rows\n");
+    printf("  -o, --output FILE                Output file; stdout if absent\n");
+    printf("  --stats-json FILE                Write structured counters and timings\n");
+    printf("  --no-header                      Treat all inputs as headerless\n");
+    printf("  --delimiter, --quote, --escape   CSV parser/writer controls\n");
+    printf("  --memory-limit BYTES             In-memory mode soft budget\n");
+    printf("  --external, --tmp-dir DIR        External mode controls\n");
+    printf("  --drop-empty-key                 Skip rows whose whole key is empty\n");
+    printf("  --ignore-header-mismatch         Continue when later headers differ\n");
+    printf("  --strict, --skip-errors          Parse error behavior\n");
+}
+
+static int cisv_rows_cli_main(int argc, char *argv[]) {
+    if (argc <= 0) return 2;
+
+    cisv_rows_options_t options;
+    cisv_rows_options_init(&options);
+
+    int first_option = 1;
+    if (strcmp(argv[0], "dedup") == 0) {
+        options.mode = CISV_ROWS_DEDUP;
+    } else if (strcmp(argv[0], "filter") == 0 && argc > 1 && strcmp(argv[1], "exclude") == 0) {
+        options.mode = CISV_ROWS_FILTER_EXCLUDE;
+        first_option = 2;
+    } else if (strcmp(argv[0], "cat") == 0 && argc > 1 && strcmp(argv[1], "rows") == 0) {
+        options.mode = CISV_ROWS_CAT;
+        first_option = 2;
+    } else if (strcmp(argv[0], "merge") == 0 && argc > 1 && strcmp(argv[1], "rows") == 0) {
+        options.mode = CISV_ROWS_MERGE;
+        first_option = 2;
+    } else {
+        print_rows_help("cisv");
+        return 2;
+    }
+
+    enum {
+        ROW_OPT_KEY = 1000,
+        ROW_OPT_KEY_INDEX,
+        ROW_OPT_DEDUP_KEY,
+        ROW_OPT_KEEP,
+        ROW_OPT_KEYS_FILE,
+        ROW_OPT_KEYS_FILE_KEY,
+        ROW_OPT_KEYS_FILE_KEY_INDEX,
+        ROW_OPT_EXCLUDE_KEYS,
+        ROW_OPT_STATS_JSON,
+        ROW_OPT_NO_HEADER,
+        ROW_OPT_MEMORY_LIMIT,
+        ROW_OPT_EXTERNAL,
+        ROW_OPT_TMP_DIR,
+        ROW_OPT_DROP_EMPTY_KEY,
+        ROW_OPT_IGNORE_HEADER_MISMATCH,
+        ROW_OPT_SKIP_ERRORS,
+        ROW_OPT_STRICT
+    };
+
+    static struct option long_options[] = {
+        {"help", no_argument, 0, 'h'},
+        {"output", required_argument, 0, 'o'},
+        {"delimiter", required_argument, 0, 'd'},
+        {"quote", required_argument, 0, 'q'},
+        {"escape", required_argument, 0, 'e'},
+        {"key", required_argument, 0, ROW_OPT_KEY},
+        {"key-index", required_argument, 0, ROW_OPT_KEY_INDEX},
+        {"dedup-key", required_argument, 0, ROW_OPT_DEDUP_KEY},
+        {"keep", required_argument, 0, ROW_OPT_KEEP},
+        {"keys-file", required_argument, 0, ROW_OPT_KEYS_FILE},
+        {"keys-file-key", required_argument, 0, ROW_OPT_KEYS_FILE_KEY},
+        {"keys-file-key-index", required_argument, 0, ROW_OPT_KEYS_FILE_KEY_INDEX},
+        {"exclude-keys", required_argument, 0, ROW_OPT_EXCLUDE_KEYS},
+        {"stats-json", required_argument, 0, ROW_OPT_STATS_JSON},
+        {"no-header", no_argument, 0, ROW_OPT_NO_HEADER},
+        {"memory-limit", required_argument, 0, ROW_OPT_MEMORY_LIMIT},
+        {"max-memory", required_argument, 0, ROW_OPT_MEMORY_LIMIT},
+        {"external", no_argument, 0, ROW_OPT_EXTERNAL},
+        {"tmp-dir", required_argument, 0, ROW_OPT_TMP_DIR},
+        {"drop-empty-key", no_argument, 0, ROW_OPT_DROP_EMPTY_KEY},
+        {"ignore-header-mismatch", no_argument, 0, ROW_OPT_IGNORE_HEADER_MISMATCH},
+        {"skip-errors", no_argument, 0, ROW_OPT_SKIP_ERRORS},
+        {"strict", no_argument, 0, ROW_OPT_STRICT},
+        {0, 0, 0, 0}
+    };
+
+    cli_string_list source_keys = {0};
+    cli_index_list source_key_indexes = {0};
+    cli_string_list exclude_keys = {0};
+    cli_index_list exclude_key_indexes = {0};
+    char *exclude_spec = NULL;
+    const char *output_file = NULL;
+    const char *stats_json = NULL;
+    char output_tmp_path[PATH_MAX] = {0};
+    FILE *output = stdout;
+
+    optind = first_option;
+    int opt;
+    int option_index = 0;
+    while ((opt = getopt_long(argc, argv, "ho:d:q:e:", long_options, &option_index)) != -1) {
+        switch (opt) {
+            case 'h':
+                print_rows_help("cisv");
+                cli_string_list_free(&source_keys);
+                cli_index_list_free(&source_key_indexes);
+                cli_string_list_free(&exclude_keys);
+                cli_index_list_free(&exclude_key_indexes);
+                return 0;
+            case 'o':
+                output_file = optarg;
+                break;
+            case 'd':
+                if (parse_single_byte_option("Delimiter", optarg, &options.csv_config.delimiter) != 0) goto usage_error;
+                break;
+            case 'q':
+                if (parse_single_byte_option("Quote character", optarg, &options.csv_config.quote) != 0) goto usage_error;
+                break;
+            case 'e':
+                if (parse_single_byte_option("Escape character", optarg, &options.csv_config.escape) != 0) goto usage_error;
+                break;
+            case ROW_OPT_KEY:
+            case ROW_OPT_DEDUP_KEY:
+                if (cli_string_list_append(&source_keys, optarg) != 0) goto memory_error;
+                break;
+            case ROW_OPT_KEY_INDEX: {
+                size_t idx = 0;
+                if (parse_size_index_option("--key-index", optarg, &idx) != 0) goto usage_error;
+                if (cli_index_list_append(&source_key_indexes, idx) != 0) goto memory_error;
+                options.use_key_indexes = 1;
+                break;
+            }
+            case ROW_OPT_KEEP:
+                if (strcmp(optarg, "first") == 0) {
+                    options.keep = CISV_KEEP_FIRST;
+                } else if (strcmp(optarg, "last") == 0) {
+                    options.keep = CISV_KEEP_LAST;
+                } else {
+                    fprintf(stderr, "Error: --keep must be first or last\n");
+                    goto usage_error;
+                }
+                break;
+            case ROW_OPT_KEYS_FILE:
+                options.exclude_file = optarg;
+                break;
+            case ROW_OPT_KEYS_FILE_KEY:
+                if (cli_string_list_append(&exclude_keys, optarg) != 0) goto memory_error;
+                break;
+            case ROW_OPT_KEYS_FILE_KEY_INDEX: {
+                size_t idx = 0;
+                if (parse_size_index_option("--keys-file-key-index", optarg, &idx) != 0) goto usage_error;
+                if (cli_index_list_append(&exclude_key_indexes, idx) != 0) goto memory_error;
+                options.use_exclude_key_indexes = 1;
+                break;
+            }
+            case ROW_OPT_EXCLUDE_KEYS: {
+                free(exclude_spec);
+                exclude_spec = strdup(optarg);
+                if (!exclude_spec) goto memory_error;
+                char *sep = strrchr(exclude_spec, ':');
+                if (!sep || sep == exclude_spec || sep[1] == '\0') {
+                    fprintf(stderr, "Error: --exclude-keys must use FILE:COL\n");
+                    goto usage_error;
+                }
+                *sep = '\0';
+                options.exclude_file = exclude_spec;
+                exclude_keys.count = 0;
+                if (cli_string_list_append(&exclude_keys, sep + 1) != 0) goto memory_error;
+                break;
+            }
+            case ROW_OPT_STATS_JSON:
+                stats_json = optarg;
+                break;
+            case ROW_OPT_NO_HEADER:
+                options.no_header = 1;
+                break;
+            case ROW_OPT_MEMORY_LIMIT:
+                if (safe_parse_size(optarg, &options.memory_limit) != 0) {
+                    fprintf(stderr, "Error: --memory-limit must be a positive byte size\n");
+                    goto usage_error;
+                }
+                break;
+            case ROW_OPT_EXTERNAL:
+                options.external = 1;
+                break;
+            case ROW_OPT_TMP_DIR:
+                options.tmp_dir = optarg;
+                break;
+            case ROW_OPT_DROP_EMPTY_KEY:
+                options.drop_empty_key = 1;
+                break;
+            case ROW_OPT_IGNORE_HEADER_MISMATCH:
+                options.ignore_header_mismatch = 1;
+                break;
+            case ROW_OPT_SKIP_ERRORS:
+                options.csv_config.skip_lines_with_error = true;
+                break;
+            case ROW_OPT_STRICT:
+                options.csv_config.skip_lines_with_error = false;
+                options.csv_config.relaxed = false;
+                break;
+            default:
+                goto usage_error;
+        }
+    }
+
+    if (options.csv_config.delimiter == options.csv_config.quote ||
+        (options.csv_config.escape != '\0' &&
+         (options.csv_config.escape == options.csv_config.delimiter ||
+          options.csv_config.escape == options.csv_config.quote))) {
+        fprintf(stderr, "Error: delimiter, quote, and escape must be distinct\n");
+        goto usage_error;
+    }
+
+    size_t input_count = (size_t)(argc - optind);
+    if ((options.mode == CISV_ROWS_DEDUP || options.mode == CISV_ROWS_FILTER_EXCLUDE) && input_count != 1) {
+        fprintf(stderr, "Error: this command requires exactly one source CSV file\n");
+        goto usage_error;
+    }
+    if ((options.mode == CISV_ROWS_CAT || options.mode == CISV_ROWS_MERGE) && input_count == 0) {
+        fprintf(stderr, "Error: at least one source CSV file is required\n");
+        goto usage_error;
+    }
+
+    options.input_files = (const char **)&argv[optind];
+    options.input_file_count = input_count;
+    options.key_columns = source_keys.items;
+    options.key_column_count = source_keys.count;
+    options.key_indexes = source_key_indexes.items;
+    options.key_index_count = source_key_indexes.count;
+    options.exclude_key_columns = exclude_keys.items;
+    options.exclude_key_column_count = exclude_keys.count;
+    options.exclude_key_indexes = exclude_key_indexes.items;
+    options.exclude_key_index_count = exclude_key_indexes.count;
+
+    if (output_file) {
+        if (open_atomic_output_file(output_file, output_tmp_path, sizeof(output_tmp_path), &output) != 0) {
+            goto io_error;
+        }
+    }
+    setvbuf(output, NULL, _IOFBF, 1 << 20);
+    options.output = output;
+
+    cisv_rows_stats_t stats;
+    char error[512] = {0};
+    cisv_rows_status_t status = cisv_rows_execute(&options, &stats, error, sizeof(error));
+    int success = status == CISV_ROWS_OK;
+
+    if (success && stats_json) {
+        const char **stats_key_names = source_keys.count > 0 ? source_keys.items : NULL;
+        size_t stats_key_count = source_keys.count;
+        if (write_rows_stats_json(stats_json, &stats, &options, stats_key_names, stats_key_count) != 0) {
+            fprintf(stderr, "Error: failed to write stats JSON: %s\n", stats_json);
+            status = CISV_ROWS_IO_ERROR;
+            success = 0;
+        }
+    }
+
+    if (finalize_rows_output_file(&output, output_tmp_path, output_file, success) != 0 && success) {
+        status = CISV_ROWS_IO_ERROR;
+        success = 0;
+    }
+
+    if (!success) {
+        if (error[0]) {
+            fprintf(stderr, "Error: %s\n", error);
+        } else {
+            fprintf(stderr, "Error: %s\n", cisv_rows_status_name(status));
+        }
+    }
+
+    cli_string_list_free(&source_keys);
+    cli_index_list_free(&source_key_indexes);
+    cli_string_list_free(&exclude_keys);
+    cli_index_list_free(&exclude_key_indexes);
+    free(exclude_spec);
+    return success ? 0 : (int)status;
+
+memory_error:
+    fprintf(stderr, "Error: Memory allocation failed\n");
+io_error:
+    finalize_rows_output_file(&output, output_tmp_path, output_file, 0);
+    cli_string_list_free(&source_keys);
+    cli_index_list_free(&source_key_indexes);
+    cli_string_list_free(&exclude_keys);
+    cli_index_list_free(&exclude_key_indexes);
+    free(exclude_spec);
+    return 6;
+
+usage_error:
+    finalize_rows_output_file(&output, output_tmp_path, output_file, 0);
+    cli_string_list_free(&source_keys);
+    cli_index_list_free(&source_key_indexes);
+    cli_string_list_free(&exclude_keys);
+    cli_index_list_free(&exclude_key_indexes);
+    free(exclude_spec);
+    return 2;
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
+
+    if (argc > 1 &&
+        (strcmp(argv[1], "dedup") == 0 ||
+         strcmp(argv[1], "filter") == 0 ||
+         strcmp(argv[1], "cat") == 0 ||
+         strcmp(argv[1], "merge") == 0)) {
+        return cisv_rows_cli_main(argc - 1, argv + 1);
+    }
 
     if (argc > 1 && strcmp(argv[1], "write") == 0) {
         return cisv_writer_main(argc - 1, argv + 1);

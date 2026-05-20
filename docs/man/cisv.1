@@ -1,4 +1,4 @@
-.TH CISV 1 "March 2026" "cisv-cli 0.4.13" "User Commands"
+.TH CISV 1 "May 2026" "cisv-cli 0.5.0" "User Commands"
 .SH NAME
 cisv \- high-performance CSV parser and writer CLI
 .SH SYNOPSIS
@@ -7,10 +7,14 @@ cisv \- high-performance CSV parser and writer CLI
 .br
 .B cisv
 \fBwrite\fR [\fBOPTIONS\fR]
+.br
+.B cisv
+\fBmerge rows\fR \fIFILE...\fR \fB--dedup-key\fR \fICOL\fR \fB--exclude-keys\fR \fIFILE:COL\fR
 .SH DESCRIPTION
 \fBcisv\fR is a high-performance CSV command-line tool backed by \fBcisv-core\fR.
-It supports parsing, row counting, column selection, head/tail output, benchmarking,
-and CSV generation through the \fBwrite\fR subcommand.
+It supports parsing, row counting, column selection, head/tail output, native
+row deduplication/exclusion/merge operations, benchmarking, and CSV generation
+through the \fBwrite\fR subcommand.
 .SH INPUT MODEL
 .TP
 .B File path
@@ -32,13 +36,24 @@ Outputs a JSON array. Header row is used as object keys unless \fB--no-header\fR
 .B JSONL (\fB--jsonl\fR)
 Outputs one JSON object/array per line for streaming pipelines.
 .SH COMMANDS
-.SH COMMANDS
 .TP
 .B parse
 Parse a CSV file (default command when no command is provided).
 .TP
 .B write
 Generate CSV output and benchmark writer throughput.
+.TP
+.B cat rows
+Concatenate multiple CSV files by rows while preserving one header.
+.TP
+.B dedup
+Deduplicate rows by one or more key columns.
+.TP
+.B filter exclude
+Keep source rows whose key is not present in another CSV file.
+.TP
+.B merge rows
+Concatenate sources, exclude deleted keys, then deduplicate in input order.
 .SH PARSE OPTIONS
 .TP
 .B \-h, \-\-help
@@ -130,6 +145,47 @@ Set the CISV parser memory budget for this process. Accepts byte values and K/KB
 .TP
 .B \-b, \-\-benchmark
 Run parser benchmark mode.
+.SH ROW OPERATION OPTIONS
+.TP
+.B \-\-key \fICOL\fR
+Key column name for \fBdedup\fR or \fBfilter exclude\fR. May be repeated.
+.TP
+.B \-\-dedup-key \fICOL\fR
+Key column name for \fBmerge rows\fR. May be repeated.
+.TP
+.B \-\-key-index \fIN\fR
+Zero-based key index for headerless input.
+.TP
+.B \-\-keep first|last
+Dedup policy. Default is \fBfirst\fR.
+.TP
+.B \-\-keys-file \fIFILE\fR
+CSV file containing exclusion keys for \fBfilter exclude\fR.
+.TP
+.B \-\-keys-file-key \fICOL\fR
+Key column name in \fB--keys-file\fR.
+.TP
+.B \-\-exclude-keys \fIFILE:COL\fR
+CSV file and key column for \fBmerge rows\fR exclusion.
+.TP
+.B \-\-stats-json \fIFILE\fR
+Write machine-readable counters and timings.
+.TP
+.B \-\-memory-limit \fISIZE\fR
+Soft memory budget for row operations.
+.TP
+.B \-\-external
+Use partitioned disk-backed key processing. The current external mode supports
+\fB--keep first\fR.
+.TP
+.B \-\-tmp-dir \fIDIR\fR
+Temporary directory for external mode.
+.TP
+.B \-\-drop-empty-key
+Skip rows whose full key is empty.
+.TP
+.B \-\-ignore-header-mismatch
+Continue when later input headers differ, while counting mismatches.
 .SH WHERE EXPRESSIONS
 .TP
 .B Equality / inequality
@@ -210,6 +266,15 @@ JSON output:
 Pipeline from stdin to file:
 .B cat data.csv | cisv --select-name id,name - > reduced.csv
 .TP
+Merge newest-first source files, exclude deleted IDs, and write stats:
+.B cisv merge rows newest.csv middle.csv oldest.csv --dedup-key Id --exclude-keys deleted.csv:Id -o merged.csv --stats-json merged.stats.json
+.TP
+Deduplicate by last row:
+.B cisv dedup data.csv --key Id --keep last
+.TP
+Filter rows by delete-key file:
+.B cisv filter exclude data.csv --key Id --keys-file deleted.csv --keys-file-key Id
+.TP
 Generate one million rows:
 .B cisv write \-g 1000000 \-o out.csv
 .SH ENVIRONMENT
@@ -254,6 +319,27 @@ Success.
 .TP
 .B 1
 Failure.
+.TP
+.B 2
+CLI usage or configuration error.
+.TP
+.B 3
+CSV parse error in strict mode.
+.TP
+.B 4
+Missing key column.
+.TP
+.B 5
+Header mismatch.
+.TP
+.B 6
+I/O error.
+.TP
+.B 7
+Memory limit cannot be honored.
+.TP
+.B 8
+External/temp mode failure.
 .SH SEE ALSO
 .BR awk (1),
 .BR cut (1),

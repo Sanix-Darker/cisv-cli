@@ -55,7 +55,8 @@ WORKDIR /benchmark/cisv
 RUN make clean || true && make core cli
 
 COPY cli/benchmarks/run_benchmark.sh /benchmark/
-RUN chmod +x /benchmark/run_benchmark.sh
+COPY cli/benchmarks/run_merge_benchmark.sh /benchmark/
+RUN chmod +x /benchmark/run_benchmark.sh /benchmark/run_merge_benchmark.sh
 
 WORKDIR /benchmark
 ENTRYPOINT ["/benchmark/run_benchmark.sh"]
