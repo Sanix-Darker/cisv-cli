@@ -56,7 +56,8 @@ RUN make clean || true && make core cli
 
 COPY cli/benchmarks/run_benchmark.sh /benchmark/
 COPY cli/benchmarks/run_merge_benchmark.sh /benchmark/
-RUN chmod +x /benchmark/run_benchmark.sh /benchmark/run_merge_benchmark.sh
+COPY cli/benchmarks/generate_rfc_csv_corpus.sh /benchmark/
+RUN chmod +x /benchmark/run_benchmark.sh /benchmark/run_merge_benchmark.sh /benchmark/generate_rfc_csv_corpus.sh
 
 WORKDIR /benchmark
 ENTRYPOINT ["/benchmark/run_benchmark.sh"]

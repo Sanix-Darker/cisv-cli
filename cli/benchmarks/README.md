@@ -66,6 +66,9 @@ docker run --cpus=2 --memory=4g --rm cisv-cli-bench --rows=100000 --no-count-var
 
 # Native merge/dedup/delete benchmark with exact LDV-shaped counters
 docker run --cpus=2 --memory=4g --rm --entrypoint /benchmark/run_merge_benchmark.sh cisv-cli-bench --iterations=3
+
+# RFC-scale correctness corpus: eight 1M-row fixtures validated with cisv
+./cli/benchmarks/generate_rfc_csv_corpus.sh --cisv ./cli/build/cisv
 ```
 
 ### Command-line options
@@ -91,6 +94,20 @@ rows, and 75k excluded rows. It compares:
 - `cisv merge rows` in in-memory mode
 - `cisv merge rows --external --memory-limit 64MiB`
 - `xan cat rows | xan join --anti | xan dedup` when `xan` is installed
+
+The RFC corpus generator creates and validates eight large fixtures:
+
+- RFC 4180 CRLF records
+- quoted commas and doubled quotes
+- quoted embedded CRLF fields
+- final record without a line break
+- RFC 4180-bis LF line breaks with UTF-8 and NUL bytes
+- RFC 4180-bis bare-CR line breaks
+- empty lines and hash comments with quote-aware comment handling
+- relaxed truncated quoted EOF recovery
+
+By default each fixture has 1,000,000 data rows. Pass `--rows=N` for faster
+smoke runs.
 
 ## Tool Categories
 
