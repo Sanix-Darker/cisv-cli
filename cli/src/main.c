@@ -841,46 +841,18 @@ static int cli_csv_selected_col(const cli_context *ctx, int col, int *select_pos
     return *select_pos < ctx->select_count && ctx->select_cols[*select_pos] == col;
 }
 
-static int cli_memchr2(const uint8_t *data, size_t size, uint8_t a, uint8_t b) {
-    size_t i = 0;
-
-#if defined(__AVX2__)
-    const __m256i av = _mm256_set1_epi8((char)a);
-    const __m256i bv = _mm256_set1_epi8((char)b);
-    while (i + 32 <= size) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)(data + i));
-        __m256i am = _mm256_cmpeq_epi8(chunk, av);
-        __m256i bm = _mm256_cmpeq_epi8(chunk, bv);
-        if (_mm256_movemask_epi8(_mm256_or_si256(am, bm)) != 0) return 1;
-        i += 32;
-    }
-#elif defined(__SSE2__)
-    const __m128i av = _mm_set1_epi8((char)a);
-    const __m128i bv = _mm_set1_epi8((char)b);
-    while (i + 16 <= size) {
-        __m128i chunk = _mm_loadu_si128((const __m128i *)(data + i));
-        __m128i am = _mm_cmpeq_epi8(chunk, av);
-        __m128i bm = _mm_cmpeq_epi8(chunk, bv);
-        if (_mm_movemask_epi8(_mm_or_si128(am, bm)) != 0) return 1;
-        i += 16;
-    }
-#endif
-
-    for (; i < size; i++) {
-        if (data[i] == a || data[i] == b) return 1;
-    }
-    return 0;
-}
-
 static int cli_csv_output_raw_or_quote(
     cli_context *ctx,
     const uint8_t *start,
     const uint8_t *end,
     int already_quoted,
+    int force_quote,
     int first_field
 ) {
-    (void)already_quoted;
     if (!first_field && cli_csv_output_char(ctx, ctx->config->delimiter) != 0) return -1;
+    if (!already_quoted && force_quote) {
+        return cli_csv_output_field(ctx, (const char *)start, (size_t)(end - start), 1);
+    }
     return cli_csv_output_append(ctx, (const char *)start, (size_t)(end - start));
 }
 
@@ -892,7 +864,7 @@ static int can_use_fast_select_projector(const cisv_config *config, const cli_co
     if (getenv("CISV_STATS") != NULL) return 0;
 
     if (config->escape != '\0' || config->trim || config->skip_empty_lines ||
-        config->comment != '\0' || config->relaxed || config->skip_lines_with_error) {
+        config->comment != '\0' || config->skip_lines_with_error) {
         return 0;
     }
     if (config->from_line > 1 || config->to_line > 0 || config->max_row_size > 0) return 0;
@@ -942,11 +914,15 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
         for (;;) {
             const uint8_t *field_start = p;
             const uint8_t *field_end = p;
+            const uint8_t *output_start = p;
+            const uint8_t *output_end = p;
             int already_quoted = 0;
+            int force_quote = 0;
 
             if (p < end && *p == (uint8_t)quote) {
                 already_quoted = 1;
                 p++;
+                output_start = p;
                 while (p < end) {
                     if (*p == (uint8_t)quote) {
                         if (p + 1 < end && p[1] == (uint8_t)quote) {
@@ -955,6 +931,8 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                         }
                         p++;
                         field_end = p;
+                        output_start = field_start;
+                        output_end = field_end;
                         while (p < end && (*p == ' ' || *p == '\t')) p++;
                         break;
                     }
@@ -963,6 +941,9 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                 if (field_end == field_start) {
                     if (config->relaxed) {
                         field_end = p;
+                        output_end = p;
+                        already_quoted = 0;
+                        force_quote = 1;
                     } else {
                         fprintf(stderr, "Parse error: unterminated quoted field\n");
                         result = -1;
@@ -970,16 +951,30 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                     }
                 }
                 if (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
-                    fprintf(stderr, "Parse error: unexpected character after closing quote\n");
-                    result = -1;
-                    goto done;
+                    if (config->relaxed) {
+                        output_start = field_start + 1;
+                        already_quoted = 0;
+                        force_quote = 1;
+                        while (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
+                            p++;
+                        }
+                        output_end = p;
+                    } else {
+                        fprintf(stderr, "Parse error: unexpected character after closing quote\n");
+                        result = -1;
+                        goto done;
+                    }
                 }
             } else {
                 while (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
                     if (*p == (uint8_t)quote) {
-                        fprintf(stderr, "Parse error: quote inside unquoted field\n");
-                        result = -1;
-                        goto done;
+                        if (config->relaxed) {
+                            force_quote = 1;
+                        } else {
+                            fprintf(stderr, "Parse error: quote inside unquoted field\n");
+                            result = -1;
+                            goto done;
+                        }
                     }
                     p++;
                 }
@@ -987,11 +982,14 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                 if (field_end > field_start && *(field_end - 1) == '\r') {
                     field_end--;
                 }
+                output_start = field_start;
+                output_end = field_end;
             }
 
             if (cli_csv_selected_col(ctx, col, &select_pos)) {
                 if (!(ctx->no_header && input_row_num == 0)) {
-                    if (cli_csv_output_raw_or_quote(ctx, field_start, field_end, already_quoted, !emitted) != 0) {
+                    if (cli_csv_output_raw_or_quote(ctx, output_start, output_end,
+                                                    already_quoted, force_quote, !emitted) != 0) {
                         result = -1;
                         goto done;
                     }
@@ -1092,11 +1090,38 @@ static int project_select_file_noquote_fast(const char *filename, cisv_config *c
     const size_t size = (size_t)st.st_size;
     const uint8_t *end = base + size;
     const uint8_t delimiter = (uint8_t)config->delimiter;
+    const uint8_t quote = (uint8_t)config->quote;
     int result = CLI_FAST_DONE;
 
-    if (cli_memchr2(base, size, (uint8_t)config->quote, '\r')) {
+    if (memchr(base, '\r', size)) {
         result = CLI_FAST_FALLBACK;
         goto done;
+    }
+    const uint8_t *quote_pos = memchr(base, quote, size);
+    if (quote_pos) {
+        int allow_final_tail_quote = 0;
+        if (config->relaxed && ctx->select_count > 0 && !memchr(quote_pos, '\n', (size_t)(end - quote_pos))) {
+            const uint8_t *line_start = quote_pos;
+            while (line_start > base && *(line_start - 1) != '\n') {
+                line_start--;
+            }
+
+            int quote_col = 0;
+            const uint8_t *scan = line_start;
+            while (scan < quote_pos) {
+                const uint8_t *next = memchr(scan, delimiter, (size_t)(quote_pos - scan));
+                if (!next) break;
+                quote_col++;
+                scan = next + 1;
+            }
+
+            int max_select_col = ctx->select_cols[ctx->select_count - 1];
+            allow_final_tail_quote = quote_col > max_select_col;
+        }
+        if (!allow_final_tail_quote) {
+            result = CLI_FAST_FALLBACK;
+            goto done;
+        }
     }
 
     size_t input_row_num = 0;
