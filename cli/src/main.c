@@ -961,9 +961,13 @@ static int project_select_file_fast(const char *filename, cisv_config *config, c
                     p++;
                 }
                 if (field_end == field_start) {
-                    fprintf(stderr, "Parse error: unterminated quoted field\n");
-                    result = -1;
-                    goto done;
+                    if (config->relaxed) {
+                        field_end = p;
+                    } else {
+                        fprintf(stderr, "Parse error: unterminated quoted field\n");
+                        result = -1;
+                        goto done;
+                    }
                 }
                 if (p < end && *p != (uint8_t)delimiter && *p != '\n' && *p != '\r') {
                     fprintf(stderr, "Parse error: unexpected character after closing quote\n");
@@ -1872,10 +1876,6 @@ static int count_rows_parallel(const char *filename, cisv_config *config, int nu
 
     for (int i = 0; i < result_count; i++) {
         if (!results[i]) {
-            cisv_results_free(results, result_count);
-            return -1;
-        }
-        if (results[i]->error_code != 0) {
             cisv_results_free(results, result_count);
             return -1;
         }

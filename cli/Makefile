@@ -259,6 +259,15 @@ test: $(CLI_BIN)
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_bad_select_quote.csv >/tmp/test_bad_iterator_quote.out 2>/tmp/test_bad_iterator_quote.err
 	@printf '"unterminated\n' > /tmp/test_unterminated_iterator_quote.csv
 	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_unterminated_iterator_quote.csv >/tmp/test_unterminated_iterator_quote.out 2>/tmp/test_unterminated_iterator_quote.err
+	@printf 'Id,Status__c\n1,"Completed\n' > /tmp/test_truncated_quote.csv
+	@test "$$(env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --count /tmp/test_truncated_quote.csv)" = "2"
+	@! env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --select-name Id /tmp/test_truncated_quote.csv >/tmp/test_truncated_quote_strict.out 2>/tmp/test_truncated_quote_strict.err
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --relaxed --select-name Id /tmp/test_truncated_quote.csv > /tmp/test_truncated_quote_relaxed.out
+	@printf 'Id\n1\n' > /tmp/test_truncated_quote_relaxed.expected
+	@cmp -s /tmp/test_truncated_quote_relaxed.expected /tmp/test_truncated_quote_relaxed.out
+	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) --relaxed --select-name Status__c /tmp/test_truncated_quote.csv > /tmp/test_truncated_quote_status.out
+	@printf 'Status__c\n"Completed\n"\n' > /tmp/test_truncated_quote_status.expected
+	@cmp -s /tmp/test_truncated_quote_status.expected /tmp/test_truncated_quote_status.out
 	@printf '"line1\nline2",x\n' > /tmp/test_multiline.csv
 	@printf '"line1\nline2",x\n' > /tmp/test_multiline.expected
 	@env LD_LIBRARY_PATH=$(CORE_DIR)/build:$${LD_LIBRARY_PATH:-} DYLD_LIBRARY_PATH=$(CORE_DIR)/build:$${DYLD_LIBRARY_PATH:-} $(CLI_BIN) /tmp/test_multiline.csv > /tmp/test_multiline.out
@@ -332,6 +341,7 @@ test: $(CLI_BIN)
 	@rmdir /tmp/test_cisv_merge_external_tmp
 	@rm -f /tmp/test_quoted.csv /tmp/test_quoted.out /tmp/test_select_quoted.out /tmp/test_escaped_quote.csv /tmp/test_escaped_quote.out /tmp/test_select_escaped_quote.out
 	@rm -f /tmp/test_unquoted_quote.csv /tmp/test_select_unquoted_quote.out /tmp/test_select_unquoted_quote.err /tmp/test_unquoted_quote.out /tmp/test_unquoted_quote.err /tmp/test_select_unquoted_quote_relaxed.out /tmp/test_bad_select_quote.csv /tmp/test_bad_select_quote.out /tmp/test_bad_select_quote.err /tmp/test_bad_iterator_quote.out /tmp/test_bad_iterator_quote.err /tmp/test_unterminated_iterator_quote.csv /tmp/test_unterminated_iterator_quote.out /tmp/test_unterminated_iterator_quote.err
+	@rm -f /tmp/test_truncated_quote.csv /tmp/test_truncated_quote_strict.out /tmp/test_truncated_quote_strict.err /tmp/test_truncated_quote_relaxed.out /tmp/test_truncated_quote_relaxed.expected /tmp/test_truncated_quote_status.out /tmp/test_truncated_quote_status.expected
 	@rm -f /tmp/test_multiline.csv /tmp/test_multiline.expected /tmp/test_multiline.out /tmp/test_select_multiline.expected /tmp/test_select_multiline.out /tmp/test_cr_only.csv /tmp/test_cr_only.expected /tmp/test_cr_only.out /tmp/test_select_cr_only.expected /tmp/test_select_cr_only.out /tmp/test_count_semantics.csv
 	@rm -f /tmp/test_count_no_newline.csv /tmp/test_count_empty.csv /tmp/test_count_range.csv /tmp/test_range.expected /tmp/test_range.out /tmp/test_range_cr_only.csv /tmp/test_range_cr_only.out /tmp/test_count_select_name_missing.out /tmp/test_count_select_name_missing.err
 	@rm -f /tmp/test_max_row.csv /tmp/test_max_row_fail.out /tmp/test_max_row_fail.err /tmp/test_gomemlimit.csv /tmp/test_gomemlimit_fail.out /tmp/test_gomemlimit_fail.err
