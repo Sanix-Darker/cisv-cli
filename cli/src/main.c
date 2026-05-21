@@ -1889,6 +1889,12 @@ static double get_time_ms(void) {
     return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 }
 
+static int parallel_count_error_is_truncated_eof(const cisv_result_t *result) {
+    return result &&
+           result->error_code != 0 &&
+           strstr(result->error_message, "Unterminated quoted field at EOF") != NULL;
+}
+
 static int count_rows_parallel(const char *filename, cisv_config *config, int num_threads, size_t *out_count) {
     if (!out_count) return -1;
     *out_count = 0;
@@ -1901,6 +1907,14 @@ static int count_rows_parallel(const char *filename, cisv_config *config, int nu
 
     for (int i = 0; i < result_count; i++) {
         if (!results[i]) {
+            cisv_results_free(results, result_count);
+            return -1;
+        }
+        if (results[i]->error_code != 0 &&
+            !(i == result_count - 1 && parallel_count_error_is_truncated_eof(results[i]))) {
+            if (results[i]->error_message[0]) {
+                fprintf(stderr, "%s\n", results[i]->error_message);
+            }
             cisv_results_free(results, result_count);
             return -1;
         }
